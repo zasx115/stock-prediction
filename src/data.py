@@ -35,10 +35,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
-# ============================================
-# 1. S&P 500 종목 리스트 가져오기
-# ============================================
-
 def get_sp500_list():
     """
     S&P 500에 포함된 종목 리스트를 가져옵니다.
@@ -46,10 +42,6 @@ def get_sp500_list():
     
     Returns:
         DataFrame: 종목코드(Symbol), 회사명(Name), 섹터(Sector) 포함
-    
-    사용 예시:
-        sp500 = get_sp500_list()
-        print(sp500.head())
     """
     
     print("S&P 500 종목 리스트 가져오는 중...")
@@ -85,12 +77,9 @@ def get_sp500_list():
     
     # ----- 방법 2: GitHub 저장된 리스트 사용 -----
     try:
-        # 다른 사람이 정리해둔 S&P 500 리스트 (자주 업데이트됨)
         url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
         
         sp500 = pd.read_csv(url)
-        
-        # 컬럼명 통일
         sp500.columns = ['symbol', 'name', 'sector']
         sp500['symbol'] = sp500['symbol'].str.replace('.', '-', regex=False)
         
@@ -103,7 +92,6 @@ def get_sp500_list():
     # ----- 방법 3: 하드코딩된 주요 종목 (최후의 수단) -----
     print("  ⚠️ 온라인 소스 모두 실패 - 주요 종목만 사용합니다.")
     
-    # 시가총액 상위 50개 종목 (2024년 기준)
     major_stocks = {
         'symbol': [
             'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
