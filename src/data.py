@@ -55,11 +55,21 @@ def get_sp500_list():
     
     try:
         # 위키피디아에서 S&P 500 리스트 가져오기
-        # (가장 최신 정보를 유지함)
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         
-        # HTML 테이블 읽기 (첫 번째 테이블이 S&P 500 리스트)
-        tables = pd.read_html(url)
+        # User-Agent 헤더 추가 (차단 방지)
+        # 브라우저처럼 보이게 해서 차단을 피함
+        import requests
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # requests로 HTML 가져오기
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # 에러 있으면 예외 발생
+        
+        # HTML 테이블 읽기
+        tables = pd.read_html(response.text)
         sp500_table = tables[0]
         
         # 필요한 컬럼만 선택하고 이름 변경
