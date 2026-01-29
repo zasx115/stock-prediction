@@ -42,6 +42,7 @@ import config
 def get_sp500_list():
     """
     S&P 500에 포함된 종목 리스트를 가져옵니다.
+    여러 방법을 시도해서 하나라도 성공하면 반환합니다.
     
     Returns:
         DataFrame: 종목코드(Symbol), 회사명(Name), 섹터(Sector) 포함
@@ -53,40 +54,89 @@ def get_sp500_list():
     
     print("S&P 500 종목 리스트 가져오는 중...")
     
+    # ----- 방법 1: 위키피디아 (requests 사용) -----
     try:
-        # 위키피디아에서 S&P 500 리스트 가져오기
+        import requests
+        
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         
-        # User-Agent 헤더 추가 (차단 방지)
-        # 브라우저처럼 보이게 해서 차단을 피함
-        import requests
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
         }
         
-        # requests로 HTML 가져오기
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()  # 에러 있으면 예외 발생
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
         
-        # HTML 테이블 읽기
         tables = pd.read_html(response.text)
         sp500_table = tables[0]
         
-        # 필요한 컬럼만 선택하고 이름 변경
         sp500 = sp500_table[['Symbol', 'Security', 'GICS Sector']].copy()
         sp500.columns = ['symbol', 'name', 'sector']
-        
-        # 종목코드 정리 (일부 종목은 '.'이 들어있어서 '-'로 변경)
-        # 예: BRK.B → BRK-B (Yahoo Finance 형식)
         sp500['symbol'] = sp500['symbol'].str.replace('.', '-', regex=False)
         
-        print(f"✅ S&P 500 종목 {len(sp500)}개 로드 완료!")
-        
+        print(f"✅ S&P 500 종목 {len(sp500)}개 로드 완료! (위키피디아)")
         return sp500
-    
+        
     except Exception as e:
-        print(f"❌ S&P 500 리스트 가져오기 실패: {e}")
-        return pd.DataFrame()
+        print(f"  ⚠️ 위키피디아 실패: {e}")
+    
+    # ----- 방법 2: GitHub 저장된 리스트 사용 -----
+    try:
+        # 다른 사람이 정리해둔 S&P 500 리스트 (자주 업데이트됨)
+        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
+        
+        sp500 = pd.read_csv(url)
+        
+        # 컬럼명 통일
+        sp500.columns = ['symbol', 'name', 'sector']
+        sp500['symbol'] = sp500['symbol'].str.replace('.', '-', regex=False)
+        
+        print(f"✅ S&P 500 종목 {len(sp500)}개 로드 완료! (GitHub)")
+        return sp500
+        
+    except Exception as e:
+        print(f"  ⚠️ GitHub 리스트 실패: {e}")
+    
+    # ----- 방법 3: 하드코딩된 주요 종목 (최후의 수단) -----
+    print("  ⚠️ 온라인 소스 모두 실패 - 주요 종목만 사용합니다.")
+    
+    # 시가총액 상위 50개 종목 (2024년 기준)
+    major_stocks = {
+        'symbol': [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
+            'JPM', 'V', 'PG', 'XOM', 'MA', 'HD', 'CVX', 'MRK', 'LLY', 'ABBV',
+            'PEP', 'KO', 'PFE', 'COST', 'TMO', 'AVGO', 'MCD', 'WMT', 'CSCO', 'ACN',
+            'ABT', 'DHR', 'NEE', 'VZ', 'ADBE', 'CRM', 'CMCSA', 'NKE', 'TXN', 'PM',
+            'RTX', 'ORCL', 'INTC', 'AMD', 'QCOM', 'UPS', 'HON', 'IBM', 'CAT', 'BA'
+        ],
+        'name': [
+            'Apple', 'Microsoft', 'Alphabet', 'Amazon', 'NVIDIA', 'Meta', 'Tesla', 'Berkshire', 'UnitedHealth', 'Johnson&Johnson',
+            'JPMorgan', 'Visa', 'Procter&Gamble', 'ExxonMobil', 'Mastercard', 'HomeDepot', 'Chevron', 'Merck', 'Eli Lilly', 'AbbVie',
+            'PepsiCo', 'Coca-Cola', 'Pfizer', 'Costco', 'ThermoFisher', 'Broadcom', 'McDonalds', 'Walmart', 'Cisco', 'Accenture',
+            'Abbott', 'Danaher', 'NextEra', 'Verizon', 'Adobe', 'Salesforce', 'Comcast', 'Nike', 'Texas Instruments', 'Philip Morris',
+            'Raytheon', 'Oracle', 'Intel', 'AMD', 'Qualcomm', 'UPS', 'Honeywell', 'IBM', 'Caterpillar', 'Boeing'
+        ],
+        'sector': [
+            'Information Technology', 'Information Technology', 'Communication Services', 'Consumer Discretionary', 'Information Technology',
+            'Communication Services', 'Consumer Discretionary', 'Financials', 'Health Care', 'Health Care',
+            'Financials', 'Financials', 'Consumer Staples', 'Energy', 'Financials',
+            'Consumer Discretionary', 'Energy', 'Health Care', 'Health Care', 'Health Care',
+            'Consumer Staples', 'Consumer Staples', 'Health Care', 'Consumer Staples', 'Health Care',
+            'Information Technology', 'Consumer Discretionary', 'Consumer Staples', 'Information Technology', 'Information Technology',
+            'Health Care', 'Health Care', 'Utilities', 'Communication Services', 'Information Technology',
+            'Information Technology', 'Communication Services', 'Consumer Discretionary', 'Information Technology', 'Consumer Staples',
+            'Industrials', 'Information Technology', 'Information Technology', 'Information Technology', 'Information Technology',
+            'Industrials', 'Industrials', 'Information Technology', 'Industrials', 'Industrials'
+        ]
+    }
+    
+    sp500 = pd.DataFrame(major_stocks)
+    print(f"✅ 주요 종목 {len(sp500)}개 로드 완료! (하드코딩)")
+    
+    return sp500
 
 
 # ============================================
