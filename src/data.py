@@ -85,59 +85,36 @@ def get_sp500_list():
             'Connection': 'keep-alive',
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        response = redef get_sp500_list():
+    """
+    S&P 500에 포함된 종목 리스트를 가져옵니다.
+    
+    Returns:
+        DataFrame: 종목코드(Symbol), 회사명(Name), 섹터(Sector) 포함
+    """
+    
+    print("S&P 500 종목 리스트 가져오는 중...")
+    
+    try:
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        table = pd.read_html(response.text)
         
-        tables = pd.read_html(response.text)
-        sp500_table = tables[0]
-        
+        # 첫 번째 테이블에서 필요한 컬럼 추출
+        sp500_table = table[0]
         sp500 = sp500_table[['Symbol', 'Security', 'GICS Sector']].copy()
         sp500.columns = ['symbol', 'name', 'sector']
-        sp500['symbol'] = sp500['symbol'].str.replace('.', '-', regex=False)
         
-        print(f"✅ S&P 500 종목 {len(sp500)}개 로드 완료! (위키피디아)")
+        # 종목코드 정리 (BRK.B → BRK-B)
+        sp500['symbol'] = sp500['symbol'].replace('\.', '-', regex=True)
+        
+        print(f"✅ S&P 500 종목 {len(sp500)}개 로드 완료!")
         return sp500
         
     except Exception as e:
-        print(f"  ⚠️ 위키피디아 실패: {e}")
-    
-    # ----- 방법 3: 하드코딩된 주요 종목 (최후의 수단) -----
-    print("  → 방법 3: 하드코딩 데이터 사용...")
-    print("  ⚠️ 온라인 소스 모두 실패 - 주요 종목만 사용합니다.")
-    
-    major_stocks = {
-        'symbol': [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
-            'JPM', 'V', 'PG', 'XOM', 'MA', 'HD', 'CVX', 'MRK', 'LLY', 'ABBV',
-            'PEP', 'KO', 'PFE', 'COST', 'TMO', 'AVGO', 'MCD', 'WMT', 'CSCO', 'ACN',
-            'ABT', 'DHR', 'NEE', 'VZ', 'ADBE', 'CRM', 'CMCSA', 'NKE', 'TXN', 'PM',
-            'RTX', 'ORCL', 'INTC', 'AMD', 'QCOM', 'UPS', 'HON', 'IBM', 'CAT', 'BA'
-        ],
-        'name': [
-            'Apple', 'Microsoft', 'Alphabet', 'Amazon', 'NVIDIA', 'Meta', 'Tesla', 'Berkshire', 'UnitedHealth', 'Johnson&Johnson',
-            'JPMorgan', 'Visa', 'Procter&Gamble', 'ExxonMobil', 'Mastercard', 'HomeDepot', 'Chevron', 'Merck', 'Eli Lilly', 'AbbVie',
-            'PepsiCo', 'Coca-Cola', 'Pfizer', 'Costco', 'ThermoFisher', 'Broadcom', 'McDonalds', 'Walmart', 'Cisco', 'Accenture',
-            'Abbott', 'Danaher', 'NextEra', 'Verizon', 'Adobe', 'Salesforce', 'Comcast', 'Nike', 'Texas Instruments', 'Philip Morris',
-            'Raytheon', 'Oracle', 'Intel', 'AMD', 'Qualcomm', 'UPS', 'Honeywell', 'IBM', 'Caterpillar', 'Boeing'
-        ],
-        'sector': [
-            'Information Technology', 'Information Technology', 'Communication Services', 'Consumer Discretionary', 'Information Technology',
-            'Communication Services', 'Consumer Discretionary', 'Financials', 'Health Care', 'Health Care',
-            'Financials', 'Financials', 'Consumer Staples', 'Energy', 'Financials',
-            'Consumer Discretionary', 'Energy', 'Health Care', 'Health Care', 'Health Care',
-            'Consumer Staples', 'Consumer Staples', 'Health Care', 'Consumer Staples', 'Health Care',
-            'Information Technology', 'Consumer Discretionary', 'Consumer Staples', 'Information Technology', 'Information Technology',
-            'Health Care', 'Health Care', 'Utilities', 'Communication Services', 'Information Technology',
-            'Information Technology', 'Communication Services', 'Consumer Discretionary', 'Information Technology', 'Consumer Staples',
-            'Industrials', 'Information Technology', 'Information Technology', 'Information Technology', 'Information Technology',
-            'Industrials', 'Industrials', 'Information Technology', 'Industrials', 'Industrials'
-        ]
-    }
-    
-    sp500 = pd.DataFrame(major_stocks)
-    print(f"✅ 주요 종목 {len(sp500)}개 로드 완료! (하드코딩)")
-    
-    return sp500
+        print(f"❌ S&P 500 리스트 가져오기 실패: {e}")
+        return pd.DataFrame()
 
 
 # ============================================
