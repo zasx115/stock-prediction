@@ -36,56 +36,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
-# ============================================
-# 1. S&P 500 종목 리스트 가져오기
-# ============================================
-
 def get_sp500_list():
-    """
-    S&P 500에 포함된 종목 리스트를 가져옵니다.
-    여러 방법을 시도해서 하나라도 성공하면 반환합니다.
-    
-    Returns:
-        DataFrame: 종목코드(Symbol), 회사명(Name), 섹터(Sector) 포함
-    
-    사용 예시:
-        sp500 = get_sp500_list()
-        print(sp500.head())
-    """
-    
-    print("S&P 500 종목 리스트 가져오는 중...")
-    
-    # ----- 방법 1: GitHub 저장된 리스트 사용 (가장 안정적) -----
-    try:
-        print("  → 방법 1: GitHub 데이터 시도...")
-        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
-        
-        sp500 = pd.read_csv(url)
-        
-        # 컬럼명 통일
-        sp500 = sp500[['Symbol', 'Security', 'GICS Sector']].copy()
-        sp500.columns = ['symbol', 'name', 'sector']
-        sp500['symbol'] = sp500['symbol'].str.replace('.', '-', regex=False)
-        
-        print(f"✅ S&P 500 종목 {len(sp500)}개 로드 완료! (GitHub)")
-        return sp500
-        
-    except Exception as e:
-        print(f"  ⚠️ GitHub 리스트 실패: {e}")
-    
-    # ----- 방법 2: 위키피디아 (requests 사용) -----
-    try:
-        print("  → 방법 2: 위키피디아 시도...")
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
-        }
-        
-        response = redef get_sp500_list():
     """
     S&P 500에 포함된 종목 리스트를 가져옵니다.
     
@@ -115,6 +66,7 @@ def get_sp500_list():
     except Exception as e:
         print(f"❌ S&P 500 리스트 가져오기 실패: {e}")
         return pd.DataFrame()
+
 
 
 # ============================================
