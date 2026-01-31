@@ -92,7 +92,7 @@ def calculate_momentum_score(df):
     result_df = pd.DataFrame(results)
     result_df = result_df.sort_values('score', ascending=False).reset_index(drop=True)
     
-    return result_df result_df
+    return result_df
 
 
 # ============================================
