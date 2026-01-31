@@ -45,8 +45,6 @@ def calculate_momentum_score(df):
     Returns:
         DataFrame: symbol, score, return_2d, return_4d, return_6d
     """
-    print("모멘텀 점수 계산 중...")
-    
     df = df.copy()
     df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
     
@@ -87,12 +85,14 @@ def calculate_momentum_score(df):
             'score': score
         })
     
+    # 결과가 없으면 빈 DataFrame 반환 (컬럼은 유지)
+    if not results:
+        return pd.DataFrame(columns=['date', 'symbol', 'close', 'return_2d', 'return_4d', 'return_6d', 'score'])
+    
     result_df = pd.DataFrame(results)
     result_df = result_df.sort_values('score', ascending=False).reset_index(drop=True)
     
-    print(f"✅ {len(result_df)}개 종목 점수 계산 완료!")
-    
-    return result_df
+    return result_df result_df
 
 
 # ============================================
