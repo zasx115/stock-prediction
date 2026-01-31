@@ -96,25 +96,36 @@ def calculate_momentum_score(df):
 
 
 # ============================================
-# 2. 시장 필터링 (S&P 500 평균 수익률)
+# 2. 시장 필터링 (S&P 500 평균 수익률 + SPY)
 # ============================================
 
 def check_market_condition(df):
     """
     시장 전체 상황을 체크합니다.
-    S&P 500 전체 종목의 평균 일일 수익률이 양수인지 확인합니다.
+    1. SPY 수익률 확인
+    2. S&P 500 전체 종목의 평균 일일 수익률이 양수인지 확인
     
     Args:
         df: 주가 데이터 (date, symbol, close 필수)
     
     Returns:
-        tuple: (통과 여부, 평균 수익률)
+        tuple: (통과 여부, 평균 수익률, SPY 수익률)
     """
     print("시장 상황 체크 중...")
     
     df = df.copy()
     df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
     
+    # ----- SPY 수익률 계산 -----
+    spy_return = 0
+    if 'SPY' in df['symbol'].unique():
+        spy = df[df['symbol'] == 'SPY']
+        if len(spy) >= 2:
+            spy_today = spy.iloc[-1]['close']
+            spy_yesterday = spy.iloc[-2]['close']
+            spy_return = (spy_today - spy_yesterday) / spy_yesterday
+    
+    # ----- 전체 종목 평균 수익률 계산 -----
     returns = []
     
     for symbol in df['symbol'].unique():
@@ -133,11 +144,14 @@ def check_market_condition(df):
     avg_return = np.mean(returns) if returns else 0
     is_positive = avg_return > 0
     
-    status = "✅ 양호 (매수 가능)" if is_positive else "❌ 부정적 (매수 보류)"
+    # 출력
+    print(f"  SPY 수익률: {spy_return:.4f} ({spy_return*100:.2f}%)")
     print(f"  시장 평균 수익률: {avg_return:.4f} ({avg_return*100:.2f}%)")
+    
+    status = "✅ 양호 (매수 가능)" if is_positive else "❌ 부정적 (매수 보류)"
     print(f"  시장 상태: {status}")
     
-    return is_positive, avg_return
+    return is_positive, avg_return, spy_return
 
 
 # ============================================
@@ -162,8 +176,10 @@ def run_custom_strategy(df):
             'signal': 'BUY' or 'HOLD',
             'picks': [선정 종목 리스트],
             'allocations': [비중 리스트],
+            'pick_scores': [선정 종목 점수 리스트],
             'scores': DataFrame (전체 점수),
             'market_return': 시장 평균 수익률,
+            'spy_return': SPY 수익률,
             'reason': 판단 이유
         }
     """
@@ -175,8 +191,10 @@ def run_custom_strategy(df):
         'signal': 'HOLD',
         'picks': [],
         'allocations': [],
+        'pick_scores': [],
         'scores': None,
         'market_return': 0,
+        'spy_return': 0,
         'reason': ''
     }
     
@@ -191,8 +209,9 @@ def run_custom_strategy(df):
     
     # 2. 시장 필터링
     if MARKET_FILTER:
-        is_positive, avg_return = check_market_condition(df)
+        is_positive, avg_return, spy_return = check_market_condition(df)
         result['market_return'] = avg_return
+        result['spy_return'] = spy_return
         
         if not is_positive:
             result['reason'] = f'시장 부정적 (평균 수익률: {avg_return*100:.2f}%)'
@@ -213,6 +232,7 @@ def run_custom_strategy(df):
     # 5. 매수 신호 생성
     result['signal'] = 'BUY'
     result['picks'] = qualified['symbol'].tolist()
+    result['pick_scores'] = qualified['score'].tolist()
     
     # 비중 배분 (종목 수에 맞게)
     n_picks = len(result['picks'])
@@ -230,8 +250,7 @@ def run_custom_strategy(df):
     print("결과: BUY")
     print("=" * 50)
     print(f"선정 종목:")
-    for i, (symbol, alloc) in enumerate(zip(result['picks'], result['allocations'])):
-        score = qualified[qualified['symbol'] == symbol]['score'].values[0]
+    for i, (symbol, score, alloc) in enumerate(zip(result['picks'], result['pick_scores'], result['allocations'])):
         print(f"  {i+1}위: {symbol} (점수: {score:.4f}, 비중: {alloc*100:.0f}%)")
     
     return result
@@ -245,24 +264,17 @@ def run_ai_strategy(df, model=None):
     """
     [추후 구현]
     AI 모델 기반 전략을 실행합니다.
-    
-    Args:
-        df: 주가 데이터
-        model: 학습된 AI 모델
-    
-    Returns:
-        dict: 커스텀 전략과 동일한 구조
     """
     print("=" * 50)
     print("[AI 전략 실행]")
     print("=" * 50)
     print("⚠️ 아직 구현되지 않았습니다.")
-    print("모델 학습 후 사용 가능합니다.")
     
     return {
         'signal': 'HOLD',
         'picks': [],
         'allocations': [],
+        'pick_scores': [],
         'scores': None,
         'reason': 'AI 모델 미구현'
     }
@@ -276,13 +288,6 @@ def run_hybrid_strategy(df, model=None):
     """
     [추후 구현]
     커스텀 + AI 결합 전략을 실행합니다.
-    
-    Args:
-        df: 주가 데이터
-        model: 학습된 AI 모델
-    
-    Returns:
-        dict: 커스텀 전략과 동일한 구조
     """
     print("=" * 50)
     print("[하이브리드 전략 실행]")
@@ -293,6 +298,7 @@ def run_hybrid_strategy(df, model=None):
         'signal': 'HOLD',
         'picks': [],
         'allocations': [],
+        'pick_scores': [],
         'scores': None,
         'reason': '하이브리드 전략 미구현'
     }
@@ -330,6 +336,5 @@ def run_strategy(df, strategy_type='custom', model=None):
 # ============================================
 
 if __name__ == "__main__":
-    # 테스트용 더미 데이터
     print("\n[테스트] 전략 실행")
     print("실제 테스트는 Colab에서 data.py와 함께 실행하세요.")
