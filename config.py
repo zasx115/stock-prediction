@@ -146,8 +146,8 @@ LOOKBACK_DAYS = 60        # 과거 며칠 데이터를 볼지
 # ============================================
 
 # 백테스트 기간
-BACKTEST_START = "2023-01-01"
-BACKTEST_END = "2024-12-31"
+BACKTEST_START = "2024-01-01"    # 백테스트 시작일
+BACKTEST_END = None              # 백테스트 종료일 (None = 오늘까지)
 
 # 수익률 계산 기준
 BENCHMARK = "KOSPI"  # 비교 지수
