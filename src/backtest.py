@@ -53,6 +53,10 @@ def run_strategy_for_date(df, target_date):
     if scores_df.empty:
         return {'signal': 'HOLD', 'picks': [], 'allocations': [], 'pick_scores': []}
     
+    # 'score' 컬럼 확인
+    if 'score' not in scores_df.columns:
+        return {'signal': 'HOLD', 'picks': [], 'allocations': [], 'pick_scores': []}
+    
     # 시장 필터링 (평균 수익률 체크)
     if MARKET_FILTER:
         returns = []
@@ -70,8 +74,10 @@ def run_strategy_for_date(df, target_date):
             return {'signal': 'HOLD', 'picks': [], 'allocations': [], 'pick_scores': [], 'market_return': avg_return}
     
     # 상위 종목 선정
-    top_stocks = scores_df.head(TOP_N)
-    qualified = top_stocks[top_stocks['score'] >= MIN_SCORE]
+    top_stocks = scores_df.head(TOP_N).copy()
+    
+    # 최소 점수 필터링
+    qualified = top_stocks[top_stocks['score'] >= MIN_SCORE].copy()
     
     if len(qualified) == 0:
         return {'signal': 'HOLD', 'picks': [], 'allocations': [], 'pick_scores': []}
@@ -94,7 +100,6 @@ def run_strategy_for_date(df, target_date):
         'allocations': allocations,
         'pick_scores': pick_scores
     }
-
 
 # ============================================
 # 2. 손절 체크
