@@ -40,7 +40,7 @@ ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중 (1위, 2위, 3위)
 MIN_SCORE = 0.01             # 최소 점수 (이 점수 이상이어야 매수)
 MARKET_FILTER = True         # 시장 필터 사용 여부
 
-# 새로운 설정
+# ----- 리밸런싱 조건 -----
 MAX_TRADES_PER_WEEK = 2   # 주당 최대 거래 횟수
 MIN_DAYS_BETWEEN = 2      # 최소 거래 간격 (일)
 
@@ -191,10 +191,14 @@ def run_backtest(df, rebalance_days=5):
     portfolio_values = []    # 일별 포트폴리오 가치
     trades = []              # 거래 내역
     
+    
     # 현재 상태
     cash = INITIAL_CAPITAL   # 현금
     holdings = {}            # 보유 종목 {symbol: {shares, avg_price}}
     last_rebalance = None    # 마지막 리밸런싱 날짜
+    week_trade_count = 0     # 이번 주 거래 횟수
+    current_week = None      # 현재 주차
+
     
     print(f"\n{len(dates)}일 시뮬레이션 시작...")
     
@@ -250,13 +254,25 @@ def run_backtest(df, rebalance_days=5):
                 
                 del holdings[symbol]
         
-        # ----- 리밸런싱 체크 -----
-        # 마지막 리밸런싱 후 N일 지났는지 확인
+        # ----- 리밸런싱 조건 체크 -----
+        # 주차 계산 (월요일 기준)
+        week_number = date.isocalendar()[1]
+        
+        # 새로운 주 시작되면 거래 횟수 리셋
+        if current_week != week_number:
+            current_week = week_number
+            week_trade_count = 0
+        
+        # 조건 1: 이번 주 거래 횟수 < 최대
+        if week_trade_count >= MAX_TRADES_PER_WEEK:
+            continue
+        
+        # 조건 2: 마지막 거래 후 최소 N일 지났는지
         if last_rebalance is not None:
             days_since = (date - last_rebalance).days
-            if days_since < rebalance_days:
-                continue  # 아직 리밸런싱 시기 아님
-        
+            if days_since < MIN_DAYS_BETWEEN:
+                continue
+
         # ----- 오늘 점수 조회 (미리 계산된 테이블에서) -----
         today_scores = all_scores[all_scores['date'] == date].copy()
         
@@ -347,6 +363,8 @@ def run_backtest(df, rebalance_days=5):
                 })
         
         last_rebalance = date
+            week_trade_count += 1  # 이번 주 거래 횟수 증가
+
     
     # ----- 결과 정리 -----
     portfolio_df = pd.DataFrame(portfolio_values)
