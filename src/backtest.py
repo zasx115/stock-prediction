@@ -505,8 +505,8 @@ def print_metrics(metrics, trades_df=None):
     print("=" * 50)
     
     print(f"\n💰 수익")
-    print(f"  초기 자본금: {metrics['initial_capital']:,.0f}원")
-    print(f"  최종 자본금: {metrics['final_capital']:,.0f}원")
+    print(f"  초기 자본금: {metrics['initial_capital']:,.0f}달러")
+    print(f"  최종 자본금: {metrics['final_capital']:,.0f}달러")
     print(f"  총 수익률: {metrics['total_return']*100:.2f}%")
     print(f"  연환산 수익률 (CAGR): {metrics['cagr']*100:.2f}%")
     
@@ -521,7 +521,7 @@ def print_metrics(metrics, trades_df=None):
     
     print(f"\n🎯 거래 통계")
     print(f"  총 거래 횟수: {metrics['total_trades']}회")
-    print(f"  총 수수료: {metrics['total_commission']:,.0f}원")
+    print(f"  총 수수료: {metrics['total_commission']:,.0f}달러")
     print(f"  손절 횟수: {metrics['stop_loss_count']}회")
     
     print(f"\n📅 기타")
