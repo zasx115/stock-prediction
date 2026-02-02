@@ -37,27 +37,24 @@ TOP_N = 3                    # 상위 몇 개 종목 선정
 ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중 (1위, 2위, 3위)
 
 # ----- 리밸런싱 -----
-REBALANCE_DAYS = 5           # 리밸런싱 주기 (일)
+REBALANCE_DAYS = ['Monday', 'Thursday']  # 월요일, 목요일
 
 
 # ============================================
-# 1. 모멘텀 점수 사전 계산
+# 1. 모멘텀 점수 사전 계산 (엑셀 방식)
 # ============================================
 
 def calc_all_momentum_scores(df):
     """
-    모든 날짜의 모멘텀 점수를 한 번에 계산합니다.
+    엑셀 방식으로 모멘텀 점수를 계산합니다.
+    
+    - 월요일, 목요일 데이터만 사용
+    - 1주(2회전), 2주(4회전), 3주(6회전) 수익률 계산
     
     공식:
-    score = (2일전 수익률 × 3.5) + (4일전 수익률 × 2.5) + (6일전 수익률 × 1.5)
-    
-    Args:
-        df: 전체 주가 데이터
-    
-    Returns:
-        DataFrame: 날짜, 종목, 종가, 점수
+    score = (1주 수익률 × 3.5) + (2주 수익률 × 2.5) + (3주 수익률 × 1.5)
     """
-    print("모멘텀 점수 사전 계산 중...")
+    print("모멘텀 점수 사전 계산 중 (월/목 기준)...")
     
     df = df.copy()
     df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
@@ -65,32 +62,42 @@ def calc_all_momentum_scores(df):
     results = []
     
     for symbol in df['symbol'].unique():
-        stock = df[df['symbol'] == symbol].copy().reset_index(drop=True)
+        stock = df[df['symbol'] == symbol].copy()
         
-        # 최소 7일 데이터 필요
+        # 월요일, 목요일만 필터링
+        stock['weekday'] = stock['date'].dt.day_name()
+        stock = stock[stock['weekday'].isin(['Monday', 'Thursday'])].reset_index(drop=True)
+        
+        # 최소 7회 데이터 필요 (6회 전 계산하려면)
         if len(stock) < 7:
             continue
         
-        # 7일차부터 점수 계산
+        # 7회차부터 점수 계산
         for i in range(6, len(stock)):
             today = stock.iloc[i]
             today_close = today['close']
             today_date = today['date']
             
-            close_2d = stock.iloc[i-2]['close']
-            close_4d = stock.iloc[i-4]['close']
-            close_6d = stock.iloc[i-6]['close']
+            # N회 전 종가 (엑셀의 pct_change와 동일)
+            close_1w = stock.iloc[i-2]['close']  # 2회 전 = 약 1주
+            close_2w = stock.iloc[i-4]['close']  # 4회 전 = 약 2주
+            close_3w = stock.iloc[i-6]['close']  # 6회 전 = 약 3주
             
-            return_2d = (today_close - close_2d) / close_2d
-            return_4d = (today_close - close_4d) / close_4d
-            return_6d = (today_close - close_6d) / close_6d
+            # 수익률 계산
+            ret_1w = (today_close - close_1w) / close_1w
+            ret_2w = (today_close - close_2w) / close_2w
+            ret_3w = (today_close - close_3w) / close_3w
             
-            score = (return_2d * WEIGHT_2DAY) + (return_4d * WEIGHT_4DAY) + (return_6d * WEIGHT_6DAY)
+            # 모멘텀 점수
+            score = (ret_1w * WEIGHT_1W) + (ret_2w * WEIGHT_2W) + (ret_3w * WEIGHT_3W)
             
             results.append({
                 'date': today_date,
                 'symbol': symbol,
                 'close': today_close,
+                'ret_1w': ret_1w,
+                'ret_2w': ret_2w,
+                'ret_3w': ret_3w,
                 'score': score
             })
     
@@ -98,7 +105,6 @@ def calc_all_momentum_scores(df):
     print(f"✅ {len(result_df):,}개 점수 계산 완료!")
     
     return result_df
-
 
 # ============================================
 # 2. 시장 수익률 사전 계산
