@@ -527,20 +527,26 @@ def print_metrics(metrics, trades_df=None):
     print(f"\n📅 기타")
     print(f"  승률 (일 기준): {metrics['win_rate']*100:.2f}%")
     
-    # ----- 최근 매수 종목 Top 3 표시 -----
+    # ----- 최근 매수 10회 표시 -----
     if trades_df is not None and not trades_df.empty:
-        buy_trades = trades_df[trades_df['action'] == 'BUY']
+        buy_trades = trades_df[trades_df['action'] == 'BUY'].copy()
         
         if not buy_trades.empty:
-            # 마지막 매수 날짜
-            last_buy_date = buy_trades['date'].max()
-            last_buys = buy_trades[buy_trades['date'] == last_buy_date]
+            # 최근 매수 날짜 10개
+            recent_dates = buy_trades['date'].drop_duplicates().sort_values(ascending=False).head(10)
             
-            print(f"\n🛒 마지막 매수 ({last_buy_date.strftime('%Y-%m-%d')})")
-            for i, (_, row) in enumerate(last_buys.iterrows()):
-                print(f"  {i+1}위: {row['symbol']} | 가격: ${row['price']:.2f} | 금액: {row['amount']:,.0f}원")
+            print(f"\n🛒 최근 매수 내역 (최근 10회)")
+            print("-" * 50)
+            
+            for buy_date in recent_dates:
+                date_buys = buy_trades[buy_trades['date'] == buy_date].sort_values('amount', ascending=False)
+                print(f"\n📅 {buy_date.strftime('%Y-%m-%d')}")
+                
+                for i, (_, row) in enumerate(date_buys.iterrows()):
+                    score = row.get('score', 0)
+                    print(f"  {i+1}위: {row['symbol']:5} | 점수: {score:.4f} | 가격: ${row['price']:.2f} | 금액: {row['amount']:,.0f}원")
     
-    print("=" * 50)
+    print("\n" + "=" * 50)
 
 
 
