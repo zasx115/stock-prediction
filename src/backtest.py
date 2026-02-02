@@ -238,10 +238,10 @@ def run_backtest(df):
                 del holdings[symbol]
         
         # ----- 리밸런싱 체크 -----
-        if last_rebalance is not None:
-            days_since = (date - last_rebalance).days
-            if days_since < REBALANCE_DAYS:
-                continue  # 아직 리밸런싱 시기 아님
+        day_name = date.strftime('%A')
+        
+        if day_name not in REBALANCE_DAYS:
+            continue  # 월요일, 목요일 아니면 스킵
         
         # ----- 오늘 점수 조회 -----
         today_scores = all_scores[all_scores['date'] == date].copy()
