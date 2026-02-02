@@ -1,9 +1,10 @@
 # ============================================
 # 파일명: src/backtest.py
-# 설명: 백테스트 (최적화 버전
+# 설명: 백테스트 (엑셀 방식)
 # 
 # 전략:
-# - 모멘텀 점수 기반 상위 3종목 선정
+# - 월요일/목요일 데이터만 사용
+# - 1주, 2주, 3주 수익률 기반 점수
 # - 시장 필터링 (평균 수익률 > 0)
 # - 손절은 매일 체크 (-7%)
 # ============================================
@@ -27,17 +28,17 @@ SELL_COMMISSION = 0.0025     # 매도 수수료 (0.25%)
 # ----- 손절 -----
 STOP_LOSS = -0.07            # 손절 기준 (-7%)
 
-# ----- 모멘텀 점수 가중치 -----
-WEIGHT_2DAY = 3.5            # 2일전 수익률 가중치
-WEIGHT_4DAY = 2.5            # 4일전 수익률 가중치
-WEIGHT_6DAY = 1.5            # 6일전 수익률 가중치
+# ----- 모멘텀 점수 가중치 (엑셀 방식) -----
+WEIGHT_1W = 3.5              # 1주 수익률 가중치 (2회 전)
+WEIGHT_2W = 2.5              # 2주 수익률 가중치 (4회 전)
+WEIGHT_3W = 1.5              # 3주 수익률 가중치 (6회 전)
 
 # ----- 종목 선정 -----
 TOP_N = 3                    # 상위 몇 개 종목 선정
 ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중 (1위, 2위, 3위)
 
-# ----- 리밸런싱 -----
-REBALANCE_DAYS = ['Monday', 'Thursday']  # 월요일, 목요일
+# ----- 리밸런싱 요일 -----
+REBALANCE_DAYS = ['Monday', 'Thursday']  # 월요일, 목요일만 매수
 
 
 # ============================================
@@ -106,6 +107,7 @@ def calc_all_momentum_scores(df):
     
     return result_df
 
+
 # ============================================
 # 2. 시장 수익률 사전 계산
 # ============================================
@@ -113,12 +115,6 @@ def calc_all_momentum_scores(df):
 def calc_daily_market_returns(df):
     """
     모든 날짜의 시장 평균 수익률을 한 번에 계산합니다.
-    
-    Args:
-        df: 전체 주가 데이터
-    
-    Returns:
-        DataFrame: 날짜, 시장 평균 수익률
     """
     print("시장 수익률 사전 계산 중...")
     
@@ -145,21 +141,16 @@ def run_backtest(df):
     
     매일 체크:
     - 손절 (-7% 이하면 매도)
-    - 리밸런싱 주기 도래 시:
-      - 시장 필터 (평균 수익률 > 0)
-      - 종목 선정 (모멘텀 상위 3개)
-      - 매수/매도 실행
     
-    Args:
-        df: 주가 데이터
-    
-    Returns:
-        dict: portfolio(일별 가치), trades(거래 내역), metrics(성과 지표)
+    월요일/목요일만:
+    - 시장 필터 (평균 수익률 > 0)
+    - 종목 선정 (모멘텀 상위 3개)
+    - 매수/매도 실행
     """
     print("=" * 50)
     print("[백테스트 실행]")
     print(f"초기 자본금: ${INITIAL_CAPITAL:,}")
-    print(f"리밸런싱 주기: {REBALANCE_DAYS}일")
+    print(f"매수 요일: {', '.join(REBALANCE_DAYS)}")
     print(f"매수 수수료: {BUY_COMMISSION*100:.2f}%")
     print(f"매도 수수료: {SELL_COMMISSION*100:.2f}%")
     print(f"손절 기준: {STOP_LOSS*100:.1f}%")
@@ -183,7 +174,6 @@ def run_backtest(df):
     # 현재 상태
     cash = INITIAL_CAPITAL
     holdings = {}
-    last_rebalance = None
     
     print(f"\n{len(dates)}일 시뮬레이션 시작...")
     
@@ -237,7 +227,7 @@ def run_backtest(df):
                 
                 del holdings[symbol]
         
-        # ----- 리밸런싱 체크 -----
+        # ----- 매수는 월요일/목요일만 -----
         day_name = date.strftime('%A')
         
         if day_name not in REBALANCE_DAYS:
@@ -249,7 +239,7 @@ def run_backtest(df):
         if today_scores.empty:
             continue
         
-        # ----- 시장 필터링 (유일한 매수 필터) -----
+        # ----- 시장 필터링 -----
         market_ret = market_dict.get(date, 0)
         if market_ret <= 0:
             continue  # 시장 안 좋으면 매수 안 함
@@ -333,8 +323,6 @@ def run_backtest(df):
                     'return_rate': 0,
                     'score': stock_score
                 })
-        
-        last_rebalance = date
     
     # ----- 결과 정리 -----
     portfolio_df = pd.DataFrame(portfolio_values)
@@ -474,14 +462,10 @@ def print_metrics(metrics, trades_df=None):
 def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     """
     백테스트 결과를 그래프로 출력합니다.
-    
-    표시 내용:
-    - 빨간 점: 매매 시점
-    - 회색 구간: 홀딩 기간 (매수 종목 없음)
     """
     fig, axes = plt.subplots(2, 2, figsize=figsize)
     
-    # ----- 1. 포트폴리오 vs SPY + 매매 시점 표시 -----
+    # ----- 1. 포트폴리오 vs SPY -----
     ax1 = axes[0, 0]
     
     portfolio_df = portfolio_df.copy()
@@ -492,20 +476,17 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
         buy_dates = trades_df[trades_df['action'] == 'BUY']['date'].unique()
         sell_dates = trades_df[trades_df['action'].isin(['SELL', 'STOP_LOSS'])]['date'].unique()
         
-        holding = False
         hold_start = None
         
         for i, row in portfolio_df.iterrows():
             date = row['date']
             
             if date in buy_dates:
-                holding = True
                 if hold_start is not None:
                     ax1.axvspan(hold_start, date, alpha=0.2, color='gray', label='_nolegend_')
                 hold_start = None
             
             if date in sell_dates and date not in buy_dates:
-                holding = False
                 hold_start = date
         
         if hold_start is not None:
@@ -520,7 +501,7 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
         ax1.plot(spy['date'], spy['normalized'], 
                  label='SPY', linewidth=2, alpha=0.7, color='orange')
     
-    # 매매 시점 빨간 점 표시
+    # 매매 시점 빨간 점
     if not trades_df.empty:
         buy_trades = trades_df[trades_df['action'] == 'BUY']
         for _, trade in buy_trades.iterrows():
