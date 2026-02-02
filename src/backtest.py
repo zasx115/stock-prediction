@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 # ============================================
 
 # ----- 자본금 -----
-INITIAL_CAPITAL = 10000000   # 초기 자본금 (1000만원)
+INITIAL_CAPITAL = 2000   # 초기 자본금 (2000달러)
 
 # ----- 수수료 -----
 BUY_COMMISSION = 0.0025      # 매수 수수료 (0.25%)
@@ -397,6 +397,9 @@ def run_backtest(df):
                     'avg_price': buy_price
                 }
                 
+                                # 해당 종목 점수 가져오기
+                stock_score = qualified[qualified['symbol'] == symbol]['score'].values[0]
+                
                 trades.append({
                     'date': date,
                     'symbol': symbol,
@@ -405,8 +408,10 @@ def run_backtest(df):
                     'price': buy_price,
                     'amount': buy_amount,
                     'commission': commission,
-                    'return_rate': 0
+                    'return_rate': 0,
+                    'score': stock_score  # 점수 추가
                 })
+
     
     # ----- 결과 정리 -----
     portfolio_df = pd.DataFrame(portfolio_values)
@@ -487,9 +492,13 @@ def calculate_metrics(portfolio_df, trades_df, df):
 # 6. 결과 출력
 # ============================================
 
-def print_metrics(metrics):
+def print_metrics(metrics, trades_df=None):
     """
     성과 지표를 보기 좋게 출력합니다.
+    
+    Args:
+        metrics: 성과 지표 딕셔너리
+        trades_df: 거래 내역 (최근 매수 종목 표시용)
     """
     print("\n" + "=" * 50)
     print("📊 백테스트 성과")
@@ -518,7 +527,21 @@ def print_metrics(metrics):
     print(f"\n📅 기타")
     print(f"  승률 (일 기준): {metrics['win_rate']*100:.2f}%")
     
+    # ----- 최근 매수 종목 Top 3 표시 -----
+    if trades_df is not None and not trades_df.empty:
+        buy_trades = trades_df[trades_df['action'] == 'BUY']
+        
+        if not buy_trades.empty:
+            # 마지막 매수 날짜
+            last_buy_date = buy_trades['date'].max()
+            last_buys = buy_trades[buy_trades['date'] == last_buy_date]
+            
+            print(f"\n🛒 마지막 매수 ({last_buy_date.strftime('%Y-%m-%d')})")
+            for i, (_, row) in enumerate(last_buys.iterrows()):
+                print(f"  {i+1}위: {row['symbol']} | 가격: ${row['price']:.2f} | 금액: {row['amount']:,.0f}원")
+    
     print("=" * 50)
+
 
 
 # ============================================
