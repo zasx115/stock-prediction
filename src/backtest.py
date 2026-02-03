@@ -1,11 +1,11 @@
 # ============================================
 # 파일명: src/backtest.py
-# 설명: 백테스트 (엑셀 방식)
+# 설명: 백테스트 (엑셀 로직과 동일)
 # 
 # 전략:
-# - 월요일/목요일 데이터만 사용
-# - 1주, 2주, 3주 수익률 기반 점수
-# - 시장 필터링 (평균 수익률 > 0)
+# - 월요일/목요일 데이터만 사용 (resample)
+# - 1주(2회전), 2주(4회전), 3주(6회전) 수익률
+# - 시장 필터: 1주 수익률 평균 > 0
 # - 손절은 매일 체크 (-7%)
 # ============================================
 
@@ -15,120 +15,89 @@ import matplotlib.pyplot as plt
 
 
 # ============================================
-# 설정 (수정하기 쉽게 변수로 분리)
+# 설정
 # ============================================
 
-# ----- 자본금 -----
 INITIAL_CAPITAL = 2000       # 초기 자본금 ($2000)
 
-# ----- 수수료 -----
 BUY_COMMISSION = 0.0025      # 매수 수수료 (0.25%)
 SELL_COMMISSION = 0.0025     # 매도 수수료 (0.25%)
 
-# ----- 손절 -----
 STOP_LOSS = -0.07            # 손절 기준 (-7%)
 
-# ----- 모멘텀 점수 가중치 (엑셀 방식) -----
-WEIGHT_1W = 3.5              # 1주 수익률 가중치 (2회 전)
-WEIGHT_2W = 2.5              # 2주 수익률 가중치 (4회 전)
-WEIGHT_3W = 1.5              # 3주 수익률 가중치 (6회 전)
+WEIGHT_1W = 3.5              # 1주 수익률 가중치
+WEIGHT_2W = 2.5              # 2주 수익률 가중치
+WEIGHT_3W = 1.5              # 3주 수익률 가중치
 
-# ----- 종목 선정 -----
-TOP_N = 3                    # 상위 몇 개 종목 선정
-ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중 (1위, 2위, 3위)
-
-# ----- 리밸런싱 요일 -----
-REBALANCE_DAYS = ['Monday', 'Thursday']  # 월요일, 목요일만 매수
+TOP_N = 3                    # 상위 종목 수
+ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중
 
 
 # ============================================
-# 1. 모멘텀 점수 사전 계산 (엑셀 방식)
+# 1. 데이터 전처리 (엑셀 방식)
 # ============================================
 
-def calc_all_momentum_scores(df):
+def prepare_biweekly_data(df):
     """
-    엑셀 방식으로 모멘텀 점수를 계산합니다.
+    엑셀 방식으로 월/목 데이터 추출
     
-    - 월요일, 목요일 데이터만 사용
-    - 1주(2회전), 2주(4회전), 3주(6회전) 수익률 계산
-    
-    공식:
-    score = (1주 수익률 × 3.5) + (2주 수익률 × 2.5) + (3주 수익률 × 1.5)
+    엑셀 코드:
+    mon_prices = price_df.resample('W-MON').last()
+    thu_prices = price_df.resample('W-THU').last()
+    biweekly_prices = pd.concat([mon_prices, thu_prices]).sort_index()
     """
-    print("모멘텀 점수 사전 계산 중 (월/목 기준)...")
+    print("월/목 데이터 추출 중 (엑셀 방식)...")
     
     df = df.copy()
-    df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
     
-    results = []
+    # 피벗: 날짜 × 종목 형태로 변환
+    price_df = df.pivot(index='date', columns='symbol', values='close')
     
-    for symbol in df['symbol'].unique():
-        stock = df[df['symbol'] == symbol].copy()
-        
-        # 월요일, 목요일만 필터링
-        stock['weekday'] = stock['date'].dt.day_name()
-        stock = stock[stock['weekday'].isin(['Monday', 'Thursday'])].reset_index(drop=True)
-        
-        # 최소 7회 데이터 필요 (6회 전 계산하려면)
-        if len(stock) < 7:
-            continue
-        
-        # 7회차부터 점수 계산
-        for i in range(6, len(stock)):
-            today = stock.iloc[i]
-            today_close = today['close']
-            today_date = today['date']
-            
-            # N회 전 종가 (엑셀의 pct_change와 동일)
-            close_1w = stock.iloc[i-2]['close']  # 2회 전 = 약 1주
-            close_2w = stock.iloc[i-4]['close']  # 4회 전 = 약 2주
-            close_3w = stock.iloc[i-6]['close']  # 6회 전 = 약 3주
-            
-            # 수익률 계산
-            ret_1w = (today_close - close_1w) / close_1w
-            ret_2w = (today_close - close_2w) / close_2w
-            ret_3w = (today_close - close_3w) / close_3w
-            
-            # 모멘텀 점수
-            score = (ret_1w * WEIGHT_1W) + (ret_2w * WEIGHT_2W) + (ret_3w * WEIGHT_3W)
-            
-            results.append({
-                'date': today_date,
-                'symbol': symbol,
-                'close': today_close,
-                'ret_1w': ret_1w,
-                'ret_2w': ret_2w,
-                'ret_3w': ret_3w,
-                'score': score
-            })
+    # 월요일, 목요일 리샘플링
+    mon_prices = price_df.resample('W-MON').last()
+    thu_prices = price_df.resample('W-THU').last()
     
-    result_df = pd.DataFrame(results)
-    print(f"✅ {len(result_df):,}개 점수 계산 완료!")
+    # 합치고 정렬
+    biweekly_prices = pd.concat([mon_prices, thu_prices]).sort_index()
     
-    return result_df
+    # 중복 제거 + SPY 있는 날만
+    biweekly_prices = biweekly_prices[~biweekly_prices.index.duplicated(keep='last')]
+    
+    if 'SPY' in biweekly_prices.columns:
+        biweekly_prices = biweekly_prices.dropna(subset=['SPY'])
+    
+    print(f"✅ {len(biweekly_prices)}개 날짜 추출 완료!")
+    
+    return biweekly_prices
 
 
 # ============================================
-# 2. 시장 수익률 사전 계산
+# 2. 모멘텀 점수 계산 (엑셀 방식)
 # ============================================
 
-def calc_daily_market_returns(df):
+def calc_momentum_scores(biweekly_prices):
     """
-    모든 날짜의 시장 평균 수익률을 한 번에 계산합니다.
+    엑셀 방식으로 모멘텀 점수 계산
+    
+    엑셀 코드:
+    ret_1w = biweekly_prices.pct_change(2)
+    ret_2w = biweekly_prices.pct_change(4)
+    ret_4w = biweekly_prices.pct_change(6)
+    score_df = (ret_1w * 3.5) + (ret_2w * 2.5) + (ret_4w * 1.5)
     """
-    print("시장 수익률 사전 계산 중...")
+    print("모멘텀 점수 계산 중 (엑셀 방식)...")
     
-    df = df.copy()
-    df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
+    # 수익률 계산
+    ret_1w = biweekly_prices.pct_change(2)  # 2회 전 = 약 1주
+    ret_2w = biweekly_prices.pct_change(4)  # 4회 전 = 약 2주
+    ret_3w = biweekly_prices.pct_change(6)  # 6회 전 = 약 3주
     
-    df['daily_return'] = df.groupby('symbol')['close'].pct_change()
+    # 점수 계산
+    score_df = (ret_1w * WEIGHT_1W) + (ret_2w * WEIGHT_2W) + (ret_3w * WEIGHT_3W)
     
-    market_returns = df.groupby('date')['daily_return'].mean().reset_index()
-    market_returns.columns = ['date', 'market_return']
+    print(f"✅ 점수 계산 완료!")
     
-    print(f"✅ {len(market_returns)}일 시장 수익률 계산 완료!")
-    
-    return market_returns
+    return score_df, ret_1w
 
 
 # ============================================
@@ -137,35 +106,25 @@ def calc_daily_market_returns(df):
 
 def run_backtest(df):
     """
-    백테스트를 실행합니다.
-    
-    매일 체크:
-    - 손절 (-7% 이하면 매도)
-    
-    월요일/목요일만:
-    - 시장 필터 (평균 수익률 > 0)
-    - 종목 선정 (모멘텀 상위 3개)
-    - 매수/매도 실행
+    백테스트 실행 (엑셀 로직과 동일)
     """
     print("=" * 50)
-    print("[백테스트 실행]")
+    print("[백테스트 실행 - 엑셀 로직]")
     print(f"초기 자본금: ${INITIAL_CAPITAL:,}")
-    print(f"매수 요일: {', '.join(REBALANCE_DAYS)}")
-    print(f"매수 수수료: {BUY_COMMISSION*100:.2f}%")
-    print(f"매도 수수료: {SELL_COMMISSION*100:.2f}%")
     print(f"손절 기준: {STOP_LOSS*100:.1f}%")
     print("=" * 50)
     
-    # 데이터 정렬
-    df = df.sort_values('date').reset_index(drop=True)
-    dates = sorted(df['date'].unique())
+    # 원본 데이터 보관 (손절 체크용)
+    df_daily = df.copy()
+    df_daily = df_daily.sort_values('date').reset_index(drop=True)
+    daily_dates = sorted(df_daily['date'].unique())
     
-    # ----- 사전 계산 (한 번만) -----
-    all_scores = calc_all_momentum_scores(df)
-    market_returns = calc_daily_market_returns(df)
+    # ----- 엑셀 방식 데이터 준비 -----
+    biweekly_prices = prepare_biweekly_data(df)
+    score_df, ret_1w = calc_momentum_scores(biweekly_prices)
     
-    # 빠른 조회용 딕셔너리
-    market_dict = dict(zip(market_returns['date'], market_returns['market_return']))
+    # 리밸런싱 날짜 (월/목)
+    rebalance_dates = biweekly_prices.index.tolist()
     
     # 결과 저장
     portfolio_values = []
@@ -175,16 +134,15 @@ def run_backtest(df):
     cash = INITIAL_CAPITAL
     holdings = {}
     
-    print(f"\n{len(dates)}일 시뮬레이션 시작...")
+    print(f"\n{len(daily_dates)}일 시뮬레이션 시작...")
     
-    # ----- 날짜별 시뮬레이션 -----
-    for i, date in enumerate(dates):
+    # ----- 매일 시뮬레이션 -----
+    for i, date in enumerate(daily_dates):
         
-        # 진행 상황 (50일마다)
         if (i + 1) % 50 == 0:
-            print(f"  진행중... {i+1}/{len(dates)} ({(i+1)/len(dates)*100:.1f}%)")
+            print(f"  진행중... {i+1}/{len(daily_dates)} ({(i+1)/len(daily_dates)*100:.1f}%)")
         
-        today_data = df[df['date'] == date]
+        today_data = df_daily[df_daily['date'] == date]
         
         # ----- 포트폴리오 가치 계산 (매일) -----
         portfolio_value = cash
@@ -227,30 +185,26 @@ def run_backtest(df):
                 
                 del holdings[symbol]
         
-        # ----- 매수는 월요일/목요일만 -----
-        day_name = date.strftime('%A')
+        # ----- 리밸런싱 날짜인지 확인 -----
+        # pandas Timestamp로 변환해서 비교
+        date_ts = pd.Timestamp(date)
         
-        if day_name not in REBALANCE_DAYS:
-            continue  # 월요일, 목요일 아니면 스킵
-        
-        # ----- 오늘 점수 조회 -----
-        today_scores = all_scores[all_scores['date'] == date].copy()
-        
-        if today_scores.empty:
+        if date_ts not in rebalance_dates:
             continue
         
-        # ----- 시장 필터링 -----
-        market_ret = market_dict.get(date, 0)
-        if market_ret <= 0:
+        # ----- 시장 필터 (엑셀 방식: ret_1w 평균 > 0) -----
+        market_momentum = ret_1w.loc[date_ts].mean()
+        
+        if market_momentum <= 0:
             continue  # 시장 안 좋으면 매수 안 함
         
-        # ----- 상위 종목 선정 -----
-        today_scores = today_scores.sort_values('score', ascending=False)
-        qualified = today_scores.head(TOP_N)
+        # ----- 상위 종목 선정 (엑셀 방식) -----
+        current_scores = score_df.loc[date_ts].drop(labels=['SPY'], errors='ignore').dropna()
         
-        # ----- 조건 맞는 종목 없으면 스킵 -----
-        if len(qualified) == 0:
+        if current_scores.empty:
             continue
+        
+        top_n = current_scores.nlargest(TOP_N)
         
         # ----- 기존 보유 종목 매도 -----
         for symbol, info in list(holdings.items()):
@@ -277,7 +231,8 @@ def run_backtest(df):
         holdings = {}
         
         # ----- 새 종목 매수 -----
-        picks = qualified['symbol'].tolist()
+        picks = top_n.index.tolist()
+        scores = top_n.values.tolist()
         n_picks = len(picks)
         
         if n_picks >= 3:
@@ -287,7 +242,7 @@ def run_backtest(df):
         else:
             allocations = [1.0]
         
-        for symbol, allocation in zip(picks, allocations):
+        for j, (symbol, allocation) in enumerate(zip(picks, allocations)):
             stock = today_data[today_data['symbol'] == symbol]
             if stock.empty:
                 continue
@@ -309,9 +264,6 @@ def run_backtest(df):
                     'avg_price': buy_price
                 }
                 
-                # 해당 종목 점수 가져오기
-                stock_score = qualified[qualified['symbol'] == symbol]['score'].values[0]
-                
                 trades.append({
                     'date': date,
                     'symbol': symbol,
@@ -321,13 +273,13 @@ def run_backtest(df):
                     'amount': buy_amount,
                     'commission': commission,
                     'return_rate': 0,
-                    'score': stock_score
+                    'score': scores[j]
                 })
     
     # ----- 결과 정리 -----
     portfolio_df = pd.DataFrame(portfolio_values)
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
-    metrics = calculate_metrics(portfolio_df, trades_df, df)
+    metrics = calculate_metrics(portfolio_df, trades_df, df_daily)
     
     print("\n" + "=" * 50)
     print("✅ 백테스트 완료!")
@@ -434,7 +386,7 @@ def print_metrics(metrics, trades_df=None):
     print(f"\n📅 기타")
     print(f"  승률 (일 기준): {metrics['win_rate']*100:.2f}%")
     
-    # ----- 최근 매수 10회 표시 -----
+    # 최근 매수 10회 표시
     if trades_df is not None and not trades_df.empty:
         buy_trades = trades_df[trades_df['action'] == 'BUY'].copy()
         
@@ -456,7 +408,7 @@ def print_metrics(metrics, trades_df=None):
 
 
 # ============================================
-# 6. 그래프 출력 (Colab용)
+# 6. 그래프 출력
 # ============================================
 
 def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
@@ -465,13 +417,12 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     """
     fig, axes = plt.subplots(2, 2, figsize=figsize)
     
-    # ----- 1. 포트폴리오 vs SPY -----
+    # 1. 포트폴리오 vs SPY
     ax1 = axes[0, 0]
     
     portfolio_df = portfolio_df.copy()
     portfolio_df['normalized'] = portfolio_df['value'] / portfolio_df['value'].iloc[0] * 100
     
-    # 홀딩 구간 표시
     if not trades_df.empty:
         buy_dates = trades_df[trades_df['action'] == 'BUY']['date'].unique()
         sell_dates = trades_df[trades_df['action'].isin(['SELL', 'STOP_LOSS'])]['date'].unique()
@@ -501,7 +452,6 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
         ax1.plot(spy['date'], spy['normalized'], 
                  label='SPY', linewidth=2, alpha=0.7, color='orange')
     
-    # 매매 시점 빨간 점
     if not trades_df.empty:
         buy_trades = trades_df[trades_df['action'] == 'BUY']
         for _, trade in buy_trades.iterrows():
@@ -517,40 +467,31 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
-    # ----- 2. 일별 수익률 -----
+    # 2. 일별 수익률
     ax2 = axes[0, 1]
-    
     daily_returns = portfolio_df['value'].pct_change().dropna()
     colors = ['green' if r > 0 else 'red' for r in daily_returns]
     ax2.bar(range(len(daily_returns)), daily_returns, color=colors, alpha=0.7)
     ax2.axhline(y=0, color='black', linewidth=0.5)
     ax2.set_title('일별 수익률', fontsize=12)
-    ax2.set_xlabel('일수')
-    ax2.set_ylabel('수익률')
     ax2.grid(True, alpha=0.3)
     
-    # ----- 3. 누적 수익률 -----
+    # 3. 누적 수익률
     ax3 = axes[1, 0]
-    
     cumulative = (1 + daily_returns).cumprod() - 1
     ax3.fill_between(range(len(cumulative)), cumulative, alpha=0.3, color='blue')
     ax3.plot(range(len(cumulative)), cumulative, linewidth=2, color='blue')
     ax3.axhline(y=0, color='black', linewidth=0.5)
     ax3.set_title('누적 수익률', fontsize=12)
-    ax3.set_xlabel('일수')
-    ax3.set_ylabel('누적 수익률')
     ax3.grid(True, alpha=0.3)
     
-    # ----- 4. Drawdown -----
+    # 4. Drawdown
     ax4 = axes[1, 1]
-    
     peak = portfolio_df['value'].cummax()
     drawdown = (portfolio_df['value'] - peak) / peak
     ax4.fill_between(portfolio_df['date'], drawdown, 0, color='red', alpha=0.3)
     ax4.plot(portfolio_df['date'], drawdown, color='red', linewidth=1)
     ax4.set_title('Drawdown (낙폭)', fontsize=12)
-    ax4.set_xlabel('날짜')
-    ax4.set_ylabel('낙폭')
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -558,6 +499,6 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     
     print("\n📊 그래프 범례:")
     print("  🔴 빨간 점: 매수 시점")
-    print("  ⬜ 회색 구간: 홀딩 (보유 종목 없음)")
-    print("  🔵 파란 라인: 포트폴리오 가치")
-    print("  🟠 주황 라인: SPY (벤치마크)")
+    print("  ⬜ 회색 구간: 홀딩")
+    print("  🔵 파란 라인: 포트폴리오")
+    print("  🟠 주황 라인: SPY")
