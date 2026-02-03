@@ -1,10 +1,10 @@
 # ============================================
 # 파일명: src/backtest.py
-# 설명: 백테스트 (엑셀 로직과 동일)
+# 설명: 백테스트 (현실적인 매매 타이밍)
 # 
 # 전략:
-# - 월요일/목요일 데이터만 사용 (resample)
-# - 1주(2회전), 2주(4회전), 3주(6회전) 수익률
+# - 월요일 종가로 점수 계산 → 화요일 종가로 매수
+# - 목요일 종가로 점수 계산 → 금요일 종가로 매수
 # - 시장 필터: 1주 수익률 평균 > 0
 # - 손절은 매일 체크 (-7%)
 # ============================================
@@ -34,65 +34,57 @@ ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중
 
 
 # ============================================
-# 1. 데이터 전처리 (엑셀 방식)
+# 1. 데이터 전처리 (월/목 필터링)
 # ============================================
 
 def prepare_biweekly_data(df):
     """
-    엑셀 방식으로 월/목 데이터 추출
-    
-    엑셀 코드:
-    mon_prices = price_df.resample('W-MON').last()
-    thu_prices = price_df.resample('W-THU').last()
-    biweekly_prices = pd.concat([mon_prices, thu_prices]).sort_index()
+    월요일, 목요일 데이터만 필터링합니다.
+    (resample 대신 정확한 날짜 필터링)
     """
-    print("월/목 데이터 추출 중 (엑셀 방식)...")
+    print("월/목 데이터 필터링 중...")
     
     df = df.copy()
     
     # 피벗: 날짜 × 종목 형태로 변환
     price_df = df.pivot(index='date', columns='symbol', values='close')
     
-    # 월요일, 목요일 리샘플링
-    mon_prices = price_df.resample('W-MON').last()
-    thu_prices = price_df.resample('W-THU').last()
+    # 요일 추가
+    price_df['weekday'] = price_df.index.day_name()
     
-    # 합치고 정렬
-    biweekly_prices = pd.concat([mon_prices, thu_prices]).sort_index()
+    # 월요일, 목요일만 필터링
+    biweekly_prices = price_df[price_df['weekday'].isin(['Monday', 'Thursday'])].copy()
+    biweekly_prices = biweekly_prices.drop(columns=['weekday'])
     
-    # 중복 제거 + SPY 있는 날만
-    biweekly_prices = biweekly_prices[~biweekly_prices.index.duplicated(keep='last')]
-    
+    # SPY 있는 날만
     if 'SPY' in biweekly_prices.columns:
         biweekly_prices = biweekly_prices.dropna(subset=['SPY'])
     
-    print(f"✅ {len(biweekly_prices)}개 날짜 추출 완료!")
+    print(f"✅ {len(biweekly_prices)}개 날짜 필터링 완료!")
     
     return biweekly_prices
 
 
 # ============================================
-# 2. 모멘텀 점수 계산 (엑셀 방식)
+# 2. 모멘텀 점수 계산
 # ============================================
 
 def calc_momentum_scores(biweekly_prices):
     """
-    엑셀 방식으로 모멘텀 점수 계산
+    모멘텀 점수 계산
     
-    엑셀 코드:
+    ret_1w = 2회 전 대비 (약 1주)
+    ret_2w = 4회 전 대비 (약 2주)
+    ret_3w = 6회 전 대비 (약 3주)
+    
+    score = (ret_1w × 3.5) + (ret_2w × 2.5) + (ret_3w × 1.5)
+    """
+    print("모멘텀 점수 계산 중...")
+    
     ret_1w = biweekly_prices.pct_change(2)
     ret_2w = biweekly_prices.pct_change(4)
-    ret_4w = biweekly_prices.pct_change(6)
-    score_df = (ret_1w * 3.5) + (ret_2w * 2.5) + (ret_4w * 1.5)
-    """
-    print("모멘텀 점수 계산 중 (엑셀 방식)...")
+    ret_3w = biweekly_prices.pct_change(6)
     
-    # 수익률 계산
-    ret_1w = biweekly_prices.pct_change(2)  # 2회 전 = 약 1주
-    ret_2w = biweekly_prices.pct_change(4)  # 4회 전 = 약 2주
-    ret_3w = biweekly_prices.pct_change(6)  # 6회 전 = 약 3주
-    
-    # 점수 계산
     score_df = (ret_1w * WEIGHT_1W) + (ret_2w * WEIGHT_2W) + (ret_3w * WEIGHT_3W)
     
     print(f"✅ 점수 계산 완료!")
@@ -101,30 +93,83 @@ def calc_momentum_scores(biweekly_prices):
 
 
 # ============================================
-# 3. 백테스트 실행 (메인)
+# 3. 매수일 매핑 생성
+# ============================================
+
+def create_trade_mapping(df):
+    """
+    점수 계산일 → 실제 매수일 매핑
+    
+    월요일 종가로 점수 → 화요일 종가로 매수
+    목요일 종가로 점수 → 금요일 종가로 매수
+    """
+    print("매수일 매핑 생성 중...")
+    
+    df = df.copy()
+    dates = sorted(df['date'].unique())
+    
+    # 날짜별 요일
+    date_weekday = {d: pd.Timestamp(d).day_name() for d in dates}
+    
+    # 매핑: 점수계산일 → 매수일
+    trade_map = {}
+    
+    for i, date in enumerate(dates):
+        weekday = date_weekday[date]
+        
+        # 월요일 → 다음 화요일 찾기
+        if weekday == 'Monday':
+            for j in range(i+1, len(dates)):
+                if date_weekday[dates[j]] == 'Tuesday':
+                    trade_map[date] = dates[j]
+                    break
+        
+        # 목요일 → 다음 금요일 찾기
+        elif weekday == 'Thursday':
+            for j in range(i+1, len(dates)):
+                if date_weekday[dates[j]] == 'Friday':
+                    trade_map[date] = dates[j]
+                    break
+    
+    print(f"✅ {len(trade_map)}개 매핑 생성 완료!")
+    
+    return trade_map
+
+
+# ============================================
+# 4. 백테스트 실행 (메인)
 # ============================================
 
 def run_backtest(df):
     """
-    백테스트 실행 (엑셀 로직과 동일)
+    백테스트 실행
+    
+    - 월요일 종가로 점수 계산 → 화요일 종가로 매수
+    - 목요일 종가로 점수 계산 → 금요일 종가로 매수
+    - 손절은 매일 체크
     """
     print("=" * 50)
-    print("[백테스트 실행 - 엑셀 로직]")
+    print("[백테스트 실행]")
     print(f"초기 자본금: ${INITIAL_CAPITAL:,}")
     print(f"손절 기준: {STOP_LOSS*100:.1f}%")
+    print("점수: 월요일/목요일 종가")
+    print("매수: 화요일/금요일 종가")
     print("=" * 50)
     
-    # 원본 데이터 보관 (손절 체크용)
+    # 원본 데이터 보관
     df_daily = df.copy()
     df_daily = df_daily.sort_values('date').reset_index(drop=True)
     daily_dates = sorted(df_daily['date'].unique())
     
-    # ----- 엑셀 방식 데이터 준비 -----
+    # 월/목 데이터 준비 (점수 계산용)
     biweekly_prices = prepare_biweekly_data(df)
     score_df, ret_1w = calc_momentum_scores(biweekly_prices)
     
-    # 리밸런싱 날짜 (월/목)
-    rebalance_dates = biweekly_prices.index.tolist()
+    # 점수계산일 → 매수일 매핑
+    trade_map = create_trade_mapping(df)
+    
+    # 점수 계산 날짜 (월/목)
+    score_dates = biweekly_prices.index.tolist()
     
     # 결과 저장
     portfolio_values = []
@@ -133,6 +178,9 @@ def run_backtest(df):
     # 현재 상태
     cash = INITIAL_CAPITAL
     holdings = {}
+    
+    # 대기 중인 매수 주문 (점수계산 후 다음날 매수)
+    pending_order = None
     
     print(f"\n{len(daily_dates)}일 시뮬레이션 시작...")
     
@@ -143,6 +191,7 @@ def run_backtest(df):
             print(f"  진행중... {i+1}/{len(daily_dates)} ({(i+1)/len(daily_dates)*100:.1f}%)")
         
         today_data = df_daily[df_daily['date'] == date]
+        date_ts = pd.Timestamp(date)
         
         # ----- 포트폴리오 가치 계산 (매일) -----
         portfolio_value = cash
@@ -185,20 +234,100 @@ def run_backtest(df):
                 
                 del holdings[symbol]
         
-        # ----- 리밸런싱 날짜인지 확인 -----
-        # pandas Timestamp로 변환해서 비교
-        date_ts = pd.Timestamp(date)
+        # ----- 대기 중인 매수 주문 실행 (화요일/금요일) -----
+        if pending_order is not None and pending_order['trade_date'] == date:
+            order = pending_order
+            pending_order = None
+            
+            # 기존 보유 종목 매도
+            for symbol, info in list(holdings.items()):
+                stock = today_data[today_data['symbol'] == symbol]
+                if not stock.empty:
+                    sell_price = stock.iloc[0]['close']
+                    sell_amount = info['shares'] * sell_price
+                    commission = sell_amount * SELL_COMMISSION
+                    cash += sell_amount - commission
+                    
+                    return_rate = (sell_price - info['avg_price']) / info['avg_price']
+                    
+                    trades.append({
+                        'date': date,
+                        'symbol': symbol,
+                        'action': 'SELL',
+                        'shares': info['shares'],
+                        'price': sell_price,
+                        'amount': sell_amount,
+                        'commission': commission,
+                        'return_rate': return_rate
+                    })
+            
+            holdings = {}
+            
+            # 새 종목 매수
+            picks = order['picks']
+            scores = order['scores']
+            n_picks = len(picks)
+            
+            if n_picks >= 3:
+                allocations = ALLOCATIONS[:3]
+            elif n_picks == 2:
+                allocations = [0.5, 0.5]
+            elif n_picks == 1:
+                allocations = [1.0]
+            else:
+                allocations = []
+            
+            for j, (symbol, allocation) in enumerate(zip(picks, allocations)):
+                stock = today_data[today_data['symbol'] == symbol]
+                if stock.empty:
+                    continue
+                
+                buy_price = stock.iloc[0]['close']
+                invest_amount = portfolio_value * allocation
+                shares = int(invest_amount / buy_price)
+                
+                if shares <= 0:
+                    continue
+                
+                buy_amount = shares * buy_price
+                commission = buy_amount * BUY_COMMISSION
+                
+                if cash >= buy_amount + commission:
+                    cash -= (buy_amount + commission)
+                    holdings[symbol] = {
+                        'shares': shares,
+                        'avg_price': buy_price
+                    }
+                    
+                    trades.append({
+                        'date': date,
+                        'symbol': symbol,
+                        'action': 'BUY',
+                        'shares': shares,
+                        'price': buy_price,
+                        'amount': buy_amount,
+                        'commission': commission,
+                        'return_rate': 0,
+                        'score': scores[j] if j < len(scores) else 0
+                    })
         
-        if date_ts not in rebalance_dates:
+        # ----- 점수 계산일인지 확인 (월요일/목요일) -----
+        if date_ts not in score_dates:
             continue
         
-        # ----- 시장 필터 (엑셀 방식: ret_1w 평균 > 0) -----
+        # 매수일 확인
+        if date not in trade_map:
+            continue
+        
+        trade_date = trade_map[date]
+        
+        # ----- 시장 필터 (ret_1w 평균 > 0) -----
         market_momentum = ret_1w.loc[date_ts].mean()
         
         if market_momentum <= 0:
-            continue  # 시장 안 좋으면 매수 안 함
+            continue
         
-        # ----- 상위 종목 선정 (엑셀 방식) -----
+        # ----- 상위 종목 선정 -----
         current_scores = score_df.loc[date_ts].drop(labels=['SPY'], errors='ignore').dropna()
         
         if current_scores.empty:
@@ -206,75 +335,13 @@ def run_backtest(df):
         
         top_n = current_scores.nlargest(TOP_N)
         
-        # ----- 기존 보유 종목 매도 -----
-        for symbol, info in list(holdings.items()):
-            stock = today_data[today_data['symbol'] == symbol]
-            if not stock.empty:
-                sell_price = stock.iloc[0]['close']
-                sell_amount = info['shares'] * sell_price
-                commission = sell_amount * SELL_COMMISSION
-                cash += sell_amount - commission
-                
-                return_rate = (sell_price - info['avg_price']) / info['avg_price']
-                
-                trades.append({
-                    'date': date,
-                    'symbol': symbol,
-                    'action': 'SELL',
-                    'shares': info['shares'],
-                    'price': sell_price,
-                    'amount': sell_amount,
-                    'commission': commission,
-                    'return_rate': return_rate
-                })
-        
-        holdings = {}
-        
-        # ----- 새 종목 매수 -----
-        picks = top_n.index.tolist()
-        scores = top_n.values.tolist()
-        n_picks = len(picks)
-        
-        if n_picks >= 3:
-            allocations = ALLOCATIONS[:3]
-        elif n_picks == 2:
-            allocations = [0.5, 0.5]
-        else:
-            allocations = [1.0]
-        
-        for j, (symbol, allocation) in enumerate(zip(picks, allocations)):
-            stock = today_data[today_data['symbol'] == symbol]
-            if stock.empty:
-                continue
-            
-            buy_price = stock.iloc[0]['close']
-            invest_amount = portfolio_value * allocation
-            shares = int(invest_amount / buy_price)
-            
-            if shares <= 0:
-                continue
-            
-            buy_amount = shares * buy_price
-            commission = buy_amount * BUY_COMMISSION
-            
-            if cash >= buy_amount + commission:
-                cash -= (buy_amount + commission)
-                holdings[symbol] = {
-                    'shares': shares,
-                    'avg_price': buy_price
-                }
-                
-                trades.append({
-                    'date': date,
-                    'symbol': symbol,
-                    'action': 'BUY',
-                    'shares': shares,
-                    'price': buy_price,
-                    'amount': buy_amount,
-                    'commission': commission,
-                    'return_rate': 0,
-                    'score': scores[j]
-                })
+        # ----- 매수 주문 대기 -----
+        pending_order = {
+            'score_date': date,
+            'trade_date': trade_date,
+            'picks': top_n.index.tolist(),
+            'scores': top_n.values.tolist()
+        }
     
     # ----- 결과 정리 -----
     portfolio_df = pd.DataFrame(portfolio_values)
@@ -293,7 +360,7 @@ def run_backtest(df):
 
 
 # ============================================
-# 4. 성과 지표 계산
+# 5. 성과 지표 계산
 # ============================================
 
 def calculate_metrics(portfolio_df, trades_df, df):
@@ -352,7 +419,7 @@ def calculate_metrics(portfolio_df, trades_df, df):
 
 
 # ============================================
-# 5. 결과 출력
+# 6. 결과 출력
 # ============================================
 
 def print_metrics(metrics, trades_df=None):
@@ -397,7 +464,6 @@ def print_metrics(metrics, trades_df=None):
             print("-" * 50)
             
             for buy_date in recent_dates:
-                # 점수 순으로 정렬
                 date_buys = buy_trades[buy_trades['date'] == buy_date].sort_values('score', ascending=False)
                 print(f"\n📅 {buy_date.strftime('%Y-%m-%d')}")
                 
@@ -407,8 +473,9 @@ def print_metrics(metrics, trades_df=None):
     
     print("\n" + "=" * 50)
 
+
 # ============================================
-# 6. 그래프 출력
+# 7. 그래프 출력
 # ============================================
 
 def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
