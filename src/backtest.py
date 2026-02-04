@@ -1,12 +1,13 @@
 # ============================================
 # 파일명: src/backtest.py
-# 설명: 백테스트 (5가지 버전 비교)
+# 설명: 백테스트 (6가지 버전 비교)
 # 
-# 버전 A: 월/목 점수 → 화/금 종가 (기본)
-# 버전 B: 월/목 점수 → 화/금 시초가
-# 버전 C: 화 점수 → 수 종가
-# 버전 D: 장기 모멘텀 (1주, 1달, 2달)
-# 버전 E: 장기 모멘텀 (가중치 변경)
+# 버전 A: 월/목 → 화/금, 단기 (1주,2주,3주)
+# 버전 B: 월/목 → 화/금, 초단기 (1일,3일,5일)
+# 버전 C: 화 → 수, 단기 (1주,2주,3주)
+# 버전 D: 화 → 수, 초단기 (1일,3일,5일)
+# 버전 E: 월/목 → 화/금, 장기 (1주,1달,2달)
+# 버전 F: 월/목 → 화/금, 장기+가중치 (1주,1달,2달)
 # ============================================
 
 import pandas as pd
@@ -41,16 +42,6 @@ def prepare_price_data(df):
     return price_df
 
 
-def prepare_open_data(df):
-    """
-    시초가 피벗 테이블 (버전 B용)
-    """
-    if 'open' not in df.columns:
-        # open 없으면 close 사용
-        return df.pivot(index='date', columns='symbol', values='close')
-    return df.pivot(index='date', columns='symbol', values='open')
-
-
 def filter_by_weekday(price_df, weekdays):
     """
     특정 요일만 필터링
@@ -64,34 +55,61 @@ def filter_by_weekday(price_df, weekdays):
 # 2. 모멘텀 점수 계산 (버전별)
 # ============================================
 
-def calc_scores_ABC(price_df):
+def calc_scores_weekly(price_df):
     """
-    버전 A, B, C용 점수 계산
+    버전 A, C용: 주간 모멘텀
     (1주×3.5) + (2주×2.5) + (3주×1.5)
     
-    주 2회 데이터 기준:
-    - 2회 전 = 1주
-    - 4회 전 = 2주  
-    - 6회 전 = 3주
+    주 2회 기준: 2회=1주, 4회=2주, 6회=3주
+    주 1회 기준: 1회=1주, 2회=2주, 3회=3주
     """
-    ret_1w = price_df.pct_change(2)   # 1주 (2회 전)
-    ret_2w = price_df.pct_change(4)   # 2주 (4회 전)
-    ret_3w = price_df.pct_change(6)   # 3주 (6회 전)
+    # 데이터 간격 자동 감지
+    if len(price_df) < 2:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # 주 2회면 2회=1주, 주 1회면 1회=1주
+    avg_days = (price_df.index[-1] - price_df.index[0]).days / len(price_df)
+    
+    if avg_days < 5:  # 주 2회
+        ret_1w = price_df.pct_change(2)   # 2회 전 = 1주
+        ret_2w = price_df.pct_change(4)   # 4회 전 = 2주
+        ret_3w = price_df.pct_change(6)   # 6회 전 = 3주
+    else:  # 주 1회
+        ret_1w = price_df.pct_change(1)   # 1회 전 = 1주
+        ret_2w = price_df.pct_change(2)   # 2회 전 = 2주
+        ret_3w = price_df.pct_change(3)   # 3회 전 = 3주
     
     score_df = (ret_1w * 3.5) + (ret_2w * 2.5) + (ret_3w * 1.5)
     
     return score_df, ret_1w
 
 
-def calc_scores_D(price_df):
+def calc_scores_daily(daily_price_df, score_dates):
     """
-    버전 D용 점수 계산 (장기 모멘텀)
+    버전 B, D용: 일간 모멘텀
+    (1일×3.5) + (3일×2.5) + (5일×1.5)
+    
+    매일 데이터에서 계산
+    """
+    ret_1d = daily_price_df.pct_change(1)   # 1일 전
+    ret_3d = daily_price_df.pct_change(3)   # 3일 전
+    ret_5d = daily_price_df.pct_change(5)   # 5일 전
+    
+    score_df = (ret_1d * 3.5) + (ret_3d * 2.5) + (ret_5d * 1.5)
+    
+    # score_dates에 해당하는 날짜만 필터링
+    score_df = score_df[score_df.index.isin(score_dates)]
+    ret_1d = ret_1d[ret_1d.index.isin(score_dates)]
+    
+    return score_df, ret_1d
+
+
+def calc_scores_monthly(price_df):
+    """
+    버전 E용: 장기 모멘텀
     (1주×3.5) + (1달×2.5) + (2달×1.5)
     
-    주 2회 데이터 기준:
-    - 2회 전 = 1주
-    - 8회 전 = 1달 (4주)
-    - 16회 전 = 2달 (8주)
+    주 2회 기준: 2회=1주, 8회=1달, 16회=2달
     """
     ret_1w = price_df.pct_change(2)    # 1주
     ret_1m = price_df.pct_change(8)    # 1달
@@ -102,9 +120,9 @@ def calc_scores_D(price_df):
     return score_df, ret_1w
 
 
-def calc_scores_E(price_df):
+def calc_scores_monthly_v2(price_df):
     """
-    버전 E용 점수 계산 (장기 모멘텀 + 가중치 변경)
+    버전 F용: 장기 모멘텀 + 가중치 변경
     (1주×5.5) + (1달×3) + (2달×1.5)
     """
     ret_1w = price_df.pct_change(2)    # 1주
@@ -120,12 +138,12 @@ def calc_scores_E(price_df):
 # 3. 매수일 매핑 생성
 # ============================================
 
-def create_trade_mapping(df, score_day, trade_day):
+def create_trade_mapping(df, score_days, trade_days):
     """
     점수 계산일 → 매수일 매핑
     
-    score_day: 점수 계산 요일 (예: 'Monday')
-    trade_day: 매수 요일 (예: 'Tuesday')
+    score_days: 점수 계산 요일 리스트 (예: ['Monday', 'Thursday'])
+    trade_days: 매수 요일 매핑 (예: {'Monday': 'Tuesday', 'Thursday': 'Friday'})
     """
     dates = sorted(df['date'].unique())
     date_weekday = {d: pd.Timestamp(d).day_name() for d in dates}
@@ -133,10 +151,14 @@ def create_trade_mapping(df, score_day, trade_day):
     trade_map = {}
     
     for i, date in enumerate(dates):
-        if date_weekday[date] == score_day:
-            # 다음 trade_day 찾기
+        weekday = date_weekday[date]
+        
+        if weekday in score_days:
+            target_day = trade_days[weekday]
+            
+            # 다음 target_day 찾기
             for j in range(i+1, len(dates)):
-                if date_weekday[dates[j]] == trade_day:
+                if date_weekday[dates[j]] == target_day:
                     trade_map[date] = dates[j]
                     break
     
@@ -144,21 +166,15 @@ def create_trade_mapping(df, score_day, trade_day):
 
 
 # ============================================
-# 4. 백테스트 실행 (공통)
+# 4. 백테스트 핵심 로직
 # ============================================
 
-def run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False):
+def run_backtest_core(df, score_df, ret_1w, trade_map):
     """
     백테스트 핵심 로직
-    
-    use_open: True면 시초가 매수, False면 종가 매수
     """
     df_daily = df.copy().sort_values('date').reset_index(drop=True)
     daily_dates = sorted(df_daily['date'].unique())
-    
-    # 시초가 데이터 (버전 B용)
-    if use_open:
-        open_df = prepare_open_data(df)
     
     score_dates = score_df.dropna(how='all').index.tolist()
     
@@ -258,14 +274,11 @@ def run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False)
                 allocations = []
             
             for j, (symbol, allocation) in enumerate(zip(picks, allocations)):
-                # 시초가 또는 종가 선택
-                if use_open and date_ts in open_df.index and symbol in open_df.columns:
-                    buy_price = open_df.loc[date_ts, symbol]
-                else:
-                    stock = today_data[today_data['symbol'] == symbol]
-                    if stock.empty:
-                        continue
-                    buy_price = stock.iloc[0]['close']
+                stock = today_data[today_data['symbol'] == symbol]
+                if stock.empty:
+                    continue
+                
+                buy_price = stock.iloc[0]['close']
                 
                 if pd.isna(buy_price):
                     continue
@@ -347,26 +360,23 @@ def run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False)
 
 def run_backtest_A(df):
     """
-    버전 A: 월/목 점수 → 화/금 종가 매수
+    버전 A: 월/목 점수 → 화/금 종가
+    점수: (1주×3.5)+(2주×2.5)+(3주×1.5)
     """
-    print("=" * 50)
-    print("[버전 A] 월/목 점수 → 화/금 종가")
-    print("=" * 50)
+    print("[버전 A] 월/목→화/금, 주간모멘텀(1주,2주,3주)")
     
     price_df = prepare_price_data(df)
-    
-    # 월/목 필터링
     biweekly = filter_by_weekday(price_df, ['Monday', 'Thursday'])
-    biweekly = biweekly.dropna(subset=['SPY']) if 'SPY' in biweekly.columns else biweekly
+    if 'SPY' in biweekly.columns:
+        biweekly = biweekly.dropna(subset=['SPY'])
     
-    score_df, ret_1w = calc_scores_ABC(biweekly)
+    score_df, ret_1w = calc_scores_weekly(biweekly)
     
-    # 매핑: 월→화, 목→금
-    trade_map_mon = create_trade_mapping(df, 'Monday', 'Tuesday')
-    trade_map_thu = create_trade_mapping(df, 'Thursday', 'Friday')
-    trade_map = {**trade_map_mon, **trade_map_thu}
+    trade_map = create_trade_mapping(df, 
+        ['Monday', 'Thursday'], 
+        {'Monday': 'Tuesday', 'Thursday': 'Friday'})
     
-    portfolio_df, trades_df = run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False)
+    portfolio_df, trades_df = run_backtest_core(df, score_df, ret_1w, trade_map)
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
@@ -374,24 +384,28 @@ def run_backtest_A(df):
 
 def run_backtest_B(df):
     """
-    버전 B: 월/목 점수 → 화/금 시초가 매수
+    버전 B: 월/목 점수 → 화/금 종가
+    점수: (1일×3.5)+(3일×2.5)+(5일×1.5)
     """
-    print("=" * 50)
-    print("[버전 B] 월/목 점수 → 화/금 시초가")
-    print("=" * 50)
+    print("[버전 B] 월/목→화/금, 일간모멘텀(1일,3일,5일)")
     
     price_df = prepare_price_data(df)
+    daily_price = price_df.copy()
     
+    # 월/목 날짜 추출
     biweekly = filter_by_weekday(price_df, ['Monday', 'Thursday'])
-    biweekly = biweekly.dropna(subset=['SPY']) if 'SPY' in biweekly.columns else biweekly
+    if 'SPY' in biweekly.columns:
+        biweekly = biweekly.dropna(subset=['SPY'])
+    score_dates = biweekly.index.tolist()
     
-    score_df, ret_1w = calc_scores_ABC(biweekly)
+    # 일간 데이터로 점수 계산
+    score_df, ret_1d = calc_scores_daily(daily_price, score_dates)
     
-    trade_map_mon = create_trade_mapping(df, 'Monday', 'Tuesday')
-    trade_map_thu = create_trade_mapping(df, 'Thursday', 'Friday')
-    trade_map = {**trade_map_mon, **trade_map_thu}
+    trade_map = create_trade_mapping(df, 
+        ['Monday', 'Thursday'], 
+        {'Monday': 'Tuesday', 'Thursday': 'Friday'})
     
-    portfolio_df, trades_df = run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=True)
+    portfolio_df, trades_df = run_backtest_core(df, score_df, ret_1d, trade_map)
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
@@ -399,24 +413,23 @@ def run_backtest_B(df):
 
 def run_backtest_C(df):
     """
-    버전 C: 화 점수 → 수 종가 매수
+    버전 C: 화 점수 → 수 종가
+    점수: (1주×3.5)+(2주×2.5)+(3주×1.5)
     """
-    print("=" * 50)
-    print("[버전 C] 화 점수 → 수 종가")
-    print("=" * 50)
+    print("[버전 C] 화→수, 주간모멘텀(1주,2주,3주)")
     
     price_df = prepare_price_data(df)
-    
-    # 화요일만 필터링
     weekly = filter_by_weekday(price_df, ['Tuesday'])
-    weekly = weekly.dropna(subset=['SPY']) if 'SPY' in weekly.columns else weekly
+    if 'SPY' in weekly.columns:
+        weekly = weekly.dropna(subset=['SPY'])
     
-    score_df, ret_1w = calc_scores_ABC(weekly)
+    score_df, ret_1w = calc_scores_weekly(weekly)
     
-    # 매핑: 화→수
-    trade_map = create_trade_mapping(df, 'Tuesday', 'Wednesday')
+    trade_map = create_trade_mapping(df, 
+        ['Tuesday'], 
+        {'Tuesday': 'Wednesday'})
     
-    portfolio_df, trades_df = run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False)
+    portfolio_df, trades_df = run_backtest_core(df, score_df, ret_1w, trade_map)
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
@@ -424,25 +437,28 @@ def run_backtest_C(df):
 
 def run_backtest_D(df):
     """
-    버전 D: 장기 모멘텀 (1주, 1달, 2달)
-    (1주×3.5) + (1달×2.5) + (2달×1.5)
+    버전 D: 화 점수 → 수 종가
+    점수: (1일×3.5)+(3일×2.5)+(5일×1.5)
     """
-    print("=" * 50)
-    print("[버전 D] 장기 모멘텀 (1주×3.5 + 1달×2.5 + 2달×1.5)")
-    print("=" * 50)
+    print("[버전 D] 화→수, 일간모멘텀(1일,3일,5일)")
     
     price_df = prepare_price_data(df)
+    daily_price = price_df.copy()
     
-    biweekly = filter_by_weekday(price_df, ['Monday', 'Thursday'])
-    biweekly = biweekly.dropna(subset=['SPY']) if 'SPY' in biweekly.columns else biweekly
+    # 화요일 날짜 추출
+    weekly = filter_by_weekday(price_df, ['Tuesday'])
+    if 'SPY' in weekly.columns:
+        weekly = weekly.dropna(subset=['SPY'])
+    score_dates = weekly.index.tolist()
     
-    score_df, ret_1w = calc_scores_D(biweekly)
+    # 일간 데이터로 점수 계산
+    score_df, ret_1d = calc_scores_daily(daily_price, score_dates)
     
-    trade_map_mon = create_trade_mapping(df, 'Monday', 'Tuesday')
-    trade_map_thu = create_trade_mapping(df, 'Thursday', 'Friday')
-    trade_map = {**trade_map_mon, **trade_map_thu}
+    trade_map = create_trade_mapping(df, 
+        ['Tuesday'], 
+        {'Tuesday': 'Wednesday'})
     
-    portfolio_df, trades_df = run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False)
+    portfolio_df, trades_df = run_backtest_core(df, score_df, ret_1d, trade_map)
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
@@ -450,25 +466,47 @@ def run_backtest_D(df):
 
 def run_backtest_E(df):
     """
-    버전 E: 장기 모멘텀 + 가중치 변경
-    (1주×5.5) + (1달×3) + (2달×1.5)
+    버전 E: 월/목 점수 → 화/금 종가
+    점수: (1주×3.5)+(1달×2.5)+(2달×1.5)
     """
-    print("=" * 50)
-    print("[버전 E] 장기 모멘텀 (1주×5.5 + 1달×3 + 2달×1.5)")
-    print("=" * 50)
+    print("[버전 E] 월/목→화/금, 장기모멘텀(1주,1달,2달)")
     
     price_df = prepare_price_data(df)
-    
     biweekly = filter_by_weekday(price_df, ['Monday', 'Thursday'])
-    biweekly = biweekly.dropna(subset=['SPY']) if 'SPY' in biweekly.columns else biweekly
+    if 'SPY' in biweekly.columns:
+        biweekly = biweekly.dropna(subset=['SPY'])
     
-    score_df, ret_1w = calc_scores_E(biweekly)
+    score_df, ret_1w = calc_scores_monthly(biweekly)
     
-    trade_map_mon = create_trade_mapping(df, 'Monday', 'Tuesday')
-    trade_map_thu = create_trade_mapping(df, 'Thursday', 'Friday')
-    trade_map = {**trade_map_mon, **trade_map_thu}
+    trade_map = create_trade_mapping(df, 
+        ['Monday', 'Thursday'], 
+        {'Monday': 'Tuesday', 'Thursday': 'Friday'})
     
-    portfolio_df, trades_df = run_backtest_core(df, price_df, score_df, ret_1w, trade_map, use_open=False)
+    portfolio_df, trades_df = run_backtest_core(df, score_df, ret_1w, trade_map)
+    metrics = calculate_metrics(portfolio_df, trades_df, df)
+    
+    return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
+
+
+def run_backtest_F(df):
+    """
+    버전 F: 월/목 점수 → 화/금 종가
+    점수: (1주×5.5)+(1달×3)+(2달×1.5)
+    """
+    print("[버전 F] 월/목→화/금, 장기모멘텀(1주×5.5,1달×3,2달×1.5)")
+    
+    price_df = prepare_price_data(df)
+    biweekly = filter_by_weekday(price_df, ['Monday', 'Thursday'])
+    if 'SPY' in biweekly.columns:
+        biweekly = biweekly.dropna(subset=['SPY'])
+    
+    score_df, ret_1w = calc_scores_monthly_v2(biweekly)
+    
+    trade_map = create_trade_mapping(df, 
+        ['Monday', 'Thursday'], 
+        {'Monday': 'Tuesday', 'Thursday': 'Friday'})
+    
+    portfolio_df, trades_df = run_backtest_core(df, score_df, ret_1w, trade_map)
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
@@ -480,11 +518,11 @@ def run_backtest_E(df):
 
 def run_all_versions(df):
     """
-    5가지 버전 모두 실행하고 비교
+    6가지 버전 모두 실행하고 비교
     """
-    print("\n" + "=" * 60)
-    print("🧪 5가지 버전 백테스트 비교")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("🧪 6가지 버전 백테스트 비교")
+    print("=" * 70 + "\n")
     
     results = {}
     
@@ -493,24 +531,37 @@ def run_all_versions(df):
     results['C'] = run_backtest_C(df)
     results['D'] = run_backtest_D(df)
     results['E'] = run_backtest_E(df)
+    results['F'] = run_backtest_F(df)
     
     # 비교 테이블 출력
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("📊 결과 비교")
-    print("=" * 60)
+    print("=" * 70)
     
-    print(f"\n{'버전':<8} {'총수익률':>10} {'CAGR':>10} {'MDD':>10} {'샤프':>8} {'거래수':>8}")
-    print("-" * 60)
+    print(f"\n{'버전':<6} {'설명':<35} {'총수익률':>10} {'MDD':>10} {'샤프':>8}")
+    print("-" * 70)
     
-    for ver, res in results.items():
-        m = res['metrics']
-        print(f"{ver:<8} {m['total_return']*100:>9.2f}% {m['cagr']*100:>9.2f}% {m['mdd']*100:>9.2f}% {m['sharpe_ratio']:>8.2f} {m['total_trades']:>8}")
+    descriptions = {
+        'A': '월/목→화/금, 주간(1주,2주,3주)',
+        'B': '월/목→화/금, 일간(1일,3일,5일)',
+        'C': '화→수, 주간(1주,2주,3주)',
+        'D': '화→수, 일간(1일,3일,5일)',
+        'E': '월/목→화/금, 장기(1주,1달,2달)',
+        'F': '월/목→화/금, 장기(가중치변경)'
+    }
     
-    print("-" * 60)
+    for ver in ['A', 'B', 'C', 'D', 'E', 'F']:
+        m = results[ver]['metrics']
+        desc = descriptions[ver]
+        print(f"{ver:<6} {desc:<35} {m['total_return']*100:>9.2f}% {m['mdd']*100:>9.2f}% {m['sharpe_ratio']:>8.2f}")
+    
+    print("-" * 70)
     
     # SPY 수익률
     spy_ret = results['A']['metrics']['spy_return']
-    print(f"{'SPY':<8} {spy_ret*100:>9.2f}%")
+    print(f"{'SPY':<6} {'벤치마크':<35} {spy_ret*100:>9.2f}%")
+    
+    print("=" * 70)
     
     return results
 
@@ -633,20 +684,20 @@ def print_metrics(metrics, trades_df=None):
 
 def plot_comparison(results, df):
     """
-    5가지 버전 성과 비교 그래프
+    6가지 버전 성과 비교 그래프
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    colors = {'A': 'blue', 'B': 'green', 'C': 'red', 'D': 'purple', 'E': 'orange', 'F': 'brown'}
     
     # 1. 포트폴리오 가치 비교
     ax1 = axes[0, 0]
-    
-    colors = {'A': 'blue', 'B': 'green', 'C': 'red', 'D': 'purple', 'E': 'orange'}
     
     for ver, res in results.items():
         portfolio = res['portfolio'].copy()
         portfolio['normalized'] = portfolio['value'] / portfolio['value'].iloc[0] * 100
         ax1.plot(portfolio['date'], portfolio['normalized'], 
-                 label=f'버전 {ver}', linewidth=2, color=colors[ver])
+                 label=f'버전 {ver}', linewidth=1.5, color=colors[ver])
     
     # SPY
     if 'SPY' in df['symbol'].unique():
@@ -656,7 +707,7 @@ def plot_comparison(results, df):
                  label='SPY', linewidth=2, linestyle='--', color='gray')
     
     ax1.set_title('포트폴리오 가치 비교 (시작=100)', fontsize=12)
-    ax1.legend()
+    ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
     
     # 2. 총 수익률 비교
@@ -685,3 +736,12 @@ def plot_comparison(results, df):
     
     plt.tight_layout()
     plt.show()
+    
+    # 버전 설명 출력
+    print("\n📋 버전 설명:")
+    print("  A: 월/목→화/금, 주간모멘텀(1주,2주,3주)")
+    print("  B: 월/목→화/금, 일간모멘텀(1일,3일,5일)")
+    print("  C: 화→수, 주간모멘텀(1주,2주,3주)")
+    print("  D: 화→수, 일간모멘텀(1일,3일,5일)")
+    print("  E: 월/목→화/금, 장기모멘텀(1주,1달,2달)")
+    print("  F: 월/목→화/금, 장기모멘텀(가중치변경)")
