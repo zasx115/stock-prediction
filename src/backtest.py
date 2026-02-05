@@ -5,6 +5,7 @@
 # 전략:
 # - 화요일 점수 계산 → 수요일 종가 매수
 # - 점수: (1주×3.5) + (2주×2.5) + (3주×1.5)
+# - 같은 종목이면 비중만 조절 (거래 최소화)
 # - 슬리피지, 수수료 적용
 # - 손절 -7%
 # ============================================
@@ -65,11 +66,6 @@ def calc_momentum_scores(weekly_df):
     """
     모멘텀 점수 계산
     (1주×3.5) + (2주×2.5) + (3주×1.5)
-    
-    주 1회 데이터:
-    - 1회 전 = 1주
-    - 2회 전 = 2주
-    - 3회 전 = 3주
     """
     ret_1w = weekly_df.pct_change(1)   # 1주 전
     ret_2w = weekly_df.pct_change(2)   # 2주 전
@@ -95,7 +91,6 @@ def create_trade_mapping(df):
     
     for i, date in enumerate(dates):
         if date_weekday[date] == 'Tuesday':
-            # 다음 수요일 찾기
             for j in range(i+1, len(dates)):
                 if date_weekday[dates[j]] == 'Wednesday':
                     trade_map[date] = dates[j]
@@ -114,6 +109,7 @@ def run_backtest(df):
     
     - 화요일: 점수 계산, 종목 선정
     - 수요일: 종가 매수
+    - 같은 종목이면 비중만 조절
     - 매일: 손절 체크
     """
     print("=" * 60)
@@ -129,6 +125,10 @@ def run_backtest(df):
     # 데이터 준비
     df_daily = df.copy().sort_values('date').reset_index(drop=True)
     daily_dates = sorted(df_daily['date'].unique())
+    
+    # 백테스트 기간 출력
+    print(f"데이터 기간: {daily_dates[0].strftime('%Y-%m-%d')} ~ {daily_dates[-1].strftime('%Y-%m-%d')}")
+    print(f"총 {len(daily_dates)}일")
     
     # 화요일 데이터로 점수 계산
     price_df = prepare_price_data(df)
@@ -153,7 +153,7 @@ def run_backtest(df):
     
     # 현재 상태
     cash = INITIAL_CAPITAL
-    holdings = {}
+    holdings = {}  # {symbol: {'shares': int, 'avg_price': float}}
     pending_order = None
     
     print(f"\n{len(daily_dates)}일 시뮬레이션 시작...")
@@ -161,7 +161,7 @@ def run_backtest(df):
     # ----- 매일 시뮬레이션 -----
     for i, date in enumerate(daily_dates):
         
-        if (i + 1) % 50 == 0:
+        if (i + 1) % 100 == 0:
             print(f"  진행중... {i+1}/{len(daily_dates)} ({(i+1)/len(daily_dates)*100:.1f}%)")
         
         today_data = df_daily[df_daily['date'] == date]
@@ -216,12 +216,32 @@ def run_backtest(df):
             order = pending_order
             pending_order = None
             
-            # 기존 보유 종목 매도
-            for symbol, info in list(holdings.items()):
+            new_picks = order['picks']
+            new_scores = order['scores']
+            
+            # 현재 보유 종목
+            current_holdings = set(holdings.keys())
+            new_holdings_set = set(new_picks)
+            
+            # 매도할 종목 (새 리스트에 없는 것)
+            to_sell = current_holdings - new_holdings_set
+            
+            # 매수할 종목 (기존에 없는 것)
+            to_buy = new_holdings_set - current_holdings
+            
+            # 유지할 종목 (둘 다 있는 것)
+            to_keep = current_holdings & new_holdings_set
+            
+            # ----- 1. 매도할 종목 처리 -----
+            for symbol in to_sell:
+                if symbol not in holdings:
+                    continue
+                    
+                info = holdings[symbol]
                 stock = today_data[today_data['symbol'] == symbol]
+                
                 if not stock.empty:
                     base_price = stock.iloc[0]['close']
-                    # 슬리피지 적용 (매도 시 더 낮은 가격)
                     sell_price = base_price * (1 - SLIPPAGE)
                     sell_amount = info['shares'] * sell_price
                     commission = sell_amount * SELL_COMMISSION
@@ -240,14 +260,11 @@ def run_backtest(df):
                         'slippage': base_price * SLIPPAGE * info['shares'],
                         'return_rate': return_rate
                     })
+                    
+                    del holdings[symbol]
             
-            holdings = {}
-            
-            # 새 종목 매수
-            picks = order['picks']
-            scores = order['scores']
-            n_picks = len(picks)
-            
+            # ----- 2. 비중 조절 (유지 종목) -----
+            n_picks = len(new_picks)
             if n_picks >= 3:
                 allocations = ALLOCATIONS[:3]
             elif n_picks == 2:
@@ -257,18 +274,92 @@ def run_backtest(df):
             else:
                 allocations = []
             
-            for j, (symbol, allocation) in enumerate(zip(picks, allocations)):
+            # 목표 비중 계산
+            target_allocations = {}
+            for j, symbol in enumerate(new_picks):
+                if j < len(allocations):
+                    target_allocations[symbol] = allocations[j]
+            
+            # 유지 종목 비중 조절
+            for symbol in to_keep:
+                if symbol not in holdings or symbol not in target_allocations:
+                    continue
+                
+                stock = today_data[today_data['symbol'] == symbol]
+                if stock.empty:
+                    continue
+                
+                current_price = stock.iloc[0]['close']
+                current_value = holdings[symbol]['shares'] * current_price
+                target_value = portfolio_value * target_allocations[symbol]
+                
+                diff_value = target_value - current_value
+                diff_shares = int(abs(diff_value) / current_price)
+                
+                # 비중 차이가 5% 이상일 때만 조절
+                if abs(diff_value) / portfolio_value > 0.05 and diff_shares > 0:
+                    if diff_value > 0:
+                        # 추가 매수
+                        buy_price = current_price * (1 + SLIPPAGE)
+                        buy_amount = diff_shares * buy_price
+                        commission = buy_amount * BUY_COMMISSION
+                        
+                        if cash >= buy_amount + commission:
+                            cash -= (buy_amount + commission)
+                            holdings[symbol]['shares'] += diff_shares
+                            # 평균 단가 재계산
+                            total_cost = holdings[symbol]['avg_price'] * (holdings[symbol]['shares'] - diff_shares) + buy_amount
+                            holdings[symbol]['avg_price'] = total_cost / holdings[symbol]['shares']
+                            
+                            trades.append({
+                                'date': date,
+                                'symbol': symbol,
+                                'action': 'ADD',
+                                'shares': diff_shares,
+                                'price': buy_price,
+                                'amount': buy_amount,
+                                'commission': commission,
+                                'slippage': current_price * SLIPPAGE * diff_shares,
+                                'return_rate': 0,
+                                'score': target_allocations.get(symbol, 0)
+                            })
+                    else:
+                        # 일부 매도
+                        sell_price = current_price * (1 - SLIPPAGE)
+                        sell_amount = diff_shares * sell_price
+                        commission = sell_amount * SELL_COMMISSION
+                        cash += sell_amount - commission
+                        
+                        holdings[symbol]['shares'] -= diff_shares
+                        
+                        trades.append({
+                            'date': date,
+                            'symbol': symbol,
+                            'action': 'REDUCE',
+                            'shares': diff_shares,
+                            'price': sell_price,
+                            'amount': sell_amount,
+                            'commission': commission,
+                            'slippage': current_price * SLIPPAGE * diff_shares,
+                            'return_rate': 0
+                        })
+            
+            # ----- 3. 신규 매수 (새 종목) -----
+            for symbol in to_buy:
+                if symbol not in target_allocations:
+                    continue
+                
                 stock = today_data[today_data['symbol'] == symbol]
                 if stock.empty:
                     continue
                 
                 base_price = stock.iloc[0]['close']
-                # 슬리피지 적용 (매수 시 더 높은 가격)
                 buy_price = base_price * (1 + SLIPPAGE)
                 
                 if pd.isna(buy_price):
                     continue
                 
+                allocation = target_allocations[symbol]
                 invest_amount = portfolio_value * allocation
                 shares = int(invest_amount / buy_price)
                 
@@ -285,6 +376,10 @@ def run_backtest(df):
                         'avg_price': buy_price
                     }
                     
+                    # 점수 찾기
+                    score_idx = new_picks.index(symbol) if symbol in new_picks else -1
+                    score = new_scores[score_idx] if score_idx >= 0 and score_idx < len(new_scores) else 0
+                    
                     trades.append({
                         'date': date,
                         'symbol': symbol,
@@ -295,7 +390,7 @@ def run_backtest(df):
                         'commission': commission,
                         'slippage': base_price * SLIPPAGE * shares,
                         'return_rate': 0,
-                        'score': scores[j] if j < len(scores) else 0
+                        'score': score
                     })
         
         # ----- 화요일: 점수 계산 & 종목 선정 -----
@@ -394,6 +489,12 @@ def calculate_metrics(portfolio_df, trades_df, df):
     total_slippage = trades_df['slippage'].sum() if not trades_df.empty and 'slippage' in trades_df.columns else 0
     stop_loss_count = len(trades_df[trades_df['action'] == 'STOP_LOSS']) if not trades_df.empty else 0
     
+    # 거래 유형별 카운트
+    buy_count = len(trades_df[trades_df['action'] == 'BUY']) if not trades_df.empty else 0
+    sell_count = len(trades_df[trades_df['action'] == 'SELL']) if not trades_df.empty else 0
+    add_count = len(trades_df[trades_df['action'] == 'ADD']) if not trades_df.empty else 0
+    reduce_count = len(trades_df[trades_df['action'] == 'REDUCE']) if not trades_df.empty else 0
+    
     return {
         'initial_capital': initial,
         'final_capital': final,
@@ -406,6 +507,10 @@ def calculate_metrics(portfolio_df, trades_df, df):
         'spy_return': spy_return,
         'alpha': total_return - spy_return,
         'total_trades': total_trades,
+        'buy_count': buy_count,
+        'sell_count': sell_count,
+        'add_count': add_count,
+        'reduce_count': reduce_count,
         'total_commission': total_commission,
         'total_slippage': total_slippage,
         'stop_loss_count': stop_loss_count
@@ -441,17 +546,21 @@ def print_metrics(metrics, trades_df=None):
     
     print(f"\n🎯 거래 통계")
     print(f"  총 거래 횟수: {metrics['total_trades']}회")
+    print(f"    - 신규 매수 (BUY): {metrics['buy_count']}회")
+    print(f"    - 전량 매도 (SELL): {metrics['sell_count']}회")
+    print(f"    - 추가 매수 (ADD): {metrics['add_count']}회")
+    print(f"    - 일부 매도 (REDUCE): {metrics['reduce_count']}회")
+    print(f"    - 손절 (STOP_LOSS): {metrics['stop_loss_count']}회")
     print(f"  총 수수료: ${metrics['total_commission']:,.2f}")
     print(f"  총 슬리피지: ${metrics['total_slippage']:,.2f}")
     print(f"  총 비용: ${metrics['total_commission'] + metrics['total_slippage']:,.2f}")
-    print(f"  손절 횟수: {metrics['stop_loss_count']}회")
     
     print(f"\n📅 기타")
     print(f"  승률 (일 기준): {metrics['win_rate']*100:.2f}%")
     
     # 최근 매수 내역
     if trades_df is not None and not trades_df.empty:
-        buy_trades = trades_df[trades_df['action'] == 'BUY'].copy()
+        buy_trades = trades_df[trades_df['action'].isin(['BUY', 'ADD'])].copy()
         
         if not buy_trades.empty:
             recent_dates = buy_trades['date'].drop_duplicates().sort_values(ascending=False).head(10)
@@ -460,12 +569,15 @@ def print_metrics(metrics, trades_df=None):
             print("-" * 60)
             
             for buy_date in recent_dates:
-                date_buys = buy_trades[buy_trades['date'] == buy_date].sort_values('score', ascending=False)
+                date_buys = buy_trades[buy_trades['date'] == buy_date]
+                if 'score' in date_buys.columns:
+                    date_buys = date_buys.sort_values('score', ascending=False)
                 print(f"\n📅 {buy_date.strftime('%Y-%m-%d')}")
                 
                 for i, (_, row) in enumerate(date_buys.iterrows()):
                     score = row.get('score', 0)
-                    print(f"  {i+1}위: {row['symbol']:5} | 점수: {score:.4f} | 가격: ${row['price']:.2f} | 금액: ${row['amount']:,.2f}")
+                    action = row['action']
+                    print(f"  {action:5} {row['symbol']:5} | 점수: {score:.4f} | 가격: ${row['price']:.2f} | 금액: ${row['amount']:,.2f}")
     
     print("\n" + "=" * 60)
 
@@ -473,6 +585,7 @@ def print_metrics(metrics, trades_df=None):
 # ============================================
 # 7. 그래프 출력
 # ============================================
+
 def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     """
     백테스트 결과 그래프
@@ -487,46 +600,36 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     
     # 홀딩 구간 표시 (수정된 로직)
     if not trades_df.empty:
-        # 날짜별 보유 상태 추적
         all_dates = portfolio_df['date'].tolist()
-        
-        # 각 날짜에 보유 중인지 확인
         holding_status = {}
         is_holding = False
         
         for date in all_dates:
-            # 이 날짜에 매수했는지
-            day_buys = trades_df[(trades_df['date'] == date) & (trades_df['action'] == 'BUY')]
-            # 이 날짜에 매도했는지 (SELL 또는 STOP_LOSS)
+            day_buys = trades_df[(trades_df['date'] == date) & (trades_df['action'].isin(['BUY', 'ADD']))]
             day_sells = trades_df[(trades_df['date'] == date) & (trades_df['action'].isin(['SELL', 'STOP_LOSS']))]
             
-            # 매도 먼저 처리 (같은 날 매도 후 매수 가능)
             if not day_sells.empty:
                 is_holding = False
             
-            # 매수 처리
             if not day_buys.empty:
                 is_holding = True
             
             holding_status[date] = is_holding
         
-        # 홀딩 구간 (보유 안 함) 표시
         hold_start = None
         
         for i, date in enumerate(all_dates):
-            if not holding_status[date]:  # 보유 안 함
+            if not holding_status[date]:
                 if hold_start is None:
                     hold_start = date
-            else:  # 보유 중
+            else:
                 if hold_start is not None:
                     ax1.axvspan(hold_start, date, alpha=0.2, color='gray', label='_nolegend_')
                     hold_start = None
         
-        # 마지막 홀딩 구간
         if hold_start is not None:
             ax1.axvspan(hold_start, all_dates[-1], alpha=0.2, color='gray', label='_nolegend_')
     
-    # 포트폴리오 라인
     ax1.plot(portfolio_df['date'], portfolio_df['normalized'], 
              label='Portfolio', linewidth=2, color='blue')
     
@@ -582,8 +685,7 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     plt.show()
     
     print("\n📊 그래프 범례:")
-    print("  🔴 빨간 점: 매수 시점")
+    print("  🔴 빨간 점: 신규 매수 시점")
     print("  ⬜ 회색 구간: 현금 보유 (종목 없음)")
     print("  🔵 파란 라인: 포트폴리오")
     print("  🟠 주황 라인: SPY (벤치마크)")
-
