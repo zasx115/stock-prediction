@@ -473,7 +473,6 @@ def print_metrics(metrics, trades_df=None):
 # ============================================
 # 7. 그래프 출력
 # ============================================
-
 def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     """
     백테스트 결과 그래프
@@ -486,27 +485,48 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     portfolio_df = portfolio_df.copy()
     portfolio_df['normalized'] = portfolio_df['value'] / portfolio_df['value'].iloc[0] * 100
     
-    # 홀딩 구간 표시
+    # 홀딩 구간 표시 (수정된 로직)
     if not trades_df.empty:
-        buy_dates = trades_df[trades_df['action'] == 'BUY']['date'].unique()
-        sell_dates = trades_df[trades_df['action'].isin(['SELL', 'STOP_LOSS'])]['date'].unique()
+        # 날짜별 보유 상태 추적
+        all_dates = portfolio_df['date'].tolist()
         
+        # 각 날짜에 보유 중인지 확인
+        holding_status = {}
+        is_holding = False
+        
+        for date in all_dates:
+            # 이 날짜에 매수했는지
+            day_buys = trades_df[(trades_df['date'] == date) & (trades_df['action'] == 'BUY')]
+            # 이 날짜에 매도했는지 (SELL 또는 STOP_LOSS)
+            day_sells = trades_df[(trades_df['date'] == date) & (trades_df['action'].isin(['SELL', 'STOP_LOSS']))]
+            
+            # 매도 먼저 처리 (같은 날 매도 후 매수 가능)
+            if not day_sells.empty:
+                is_holding = False
+            
+            # 매수 처리
+            if not day_buys.empty:
+                is_holding = True
+            
+            holding_status[date] = is_holding
+        
+        # 홀딩 구간 (보유 안 함) 표시
         hold_start = None
         
-        for i, row in portfolio_df.iterrows():
-            date = row['date']
-            
-            if date in buy_dates:
+        for i, date in enumerate(all_dates):
+            if not holding_status[date]:  # 보유 안 함
+                if hold_start is None:
+                    hold_start = date
+            else:  # 보유 중
                 if hold_start is not None:
                     ax1.axvspan(hold_start, date, alpha=0.2, color='gray', label='_nolegend_')
-                hold_start = None
-            
-            if date in sell_dates and date not in buy_dates:
-                hold_start = date
+                    hold_start = None
         
+        # 마지막 홀딩 구간
         if hold_start is not None:
-            ax1.axvspan(hold_start, portfolio_df['date'].iloc[-1], alpha=0.2, color='gray', label='_nolegend_')
+            ax1.axvspan(hold_start, all_dates[-1], alpha=0.2, color='gray', label='_nolegend_')
     
+    # 포트폴리오 라인
     ax1.plot(portfolio_df['date'], portfolio_df['normalized'], 
              label='Portfolio', linewidth=2, color='blue')
     
@@ -527,7 +547,7 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
                 ax1.scatter(trade_date, port_value.values[0], 
                            color='red', s=30, zorder=5, label='_nolegend_')
     
-    ax1.set_title('Portfolio vs SPY (빨간점=매수, 회색=홀딩)', fontsize=12)
+    ax1.set_title('Portfolio vs SPY (빨간점=매수, 회색=현금보유)', fontsize=12)
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
@@ -563,6 +583,7 @@ def plot_results(portfolio_df, trades_df, df, figsize=(14, 12)):
     
     print("\n📊 그래프 범례:")
     print("  🔴 빨간 점: 매수 시점")
-    print("  ⬜ 회색 구간: 홀딩 (종목 없음)")
+    print("  ⬜ 회색 구간: 현금 보유 (종목 없음)")
     print("  🔵 파란 라인: 포트폴리오")
     print("  🟠 주황 라인: SPY (벤치마크)")
+
