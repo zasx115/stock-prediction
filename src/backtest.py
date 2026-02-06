@@ -1,36 +1,29 @@
 # ============================================
 # 파일명: src/backtest.py
-# 설명: 백테스트 (3가지 버전 비교)
+# 설명: 백테스트 (섹터 필터 4가지 버전)
 # 
-# 버전 A: 듀얼 모멘텀 (절대 + 상대)
-# 버전 B: 변동성 조절
-# 버전 C: 듀얼 모멘텀 + 변동성 조절
-# 
-# 공통:
-# - 화요일 점수 → 수요일 종가 매수
-# - 같은 종목이면 비중만 조절
-# - 손절 -7%
+# 버전 A: 섹터 필터만 (SPY 대비)
+# 버전 B: 섹터 필터 + RSI
+# 버전 C: 섹터 필터 + RSI + 섹터당 1종목
+# 버전 D: SPY 대비 1위 섹터에서 모멘텀 3종목
 # ============================================
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import yfinance as yf
 
 
 # ============================================
 # 설정
 # ============================================
 
-INITIAL_CAPITAL = 2000       # 초기 자본금 ($2000)
+INITIAL_CAPITAL = 2000
+BUY_COMMISSION = 0.0025
+SELL_COMMISSION = 0.0025
+SLIPPAGE = 0.001
+STOP_LOSS = -0.07
 
-BUY_COMMISSION = 0.0025      # 매수 수수료 (0.25%)
-SELL_COMMISSION = 0.0025     # 매도 수수료 (0.25%)
-
-SLIPPAGE = 0.001             # 슬리피지 (0.1%)
-
-STOP_LOSS = -0.07            # 손절 기준 (-7%)
-
-# 모멘텀 점수 가중치
 WEIGHT_1W = 3.5
 WEIGHT_2W = 2.5
 WEIGHT_3W = 1.5
@@ -38,18 +31,175 @@ WEIGHT_3W = 1.5
 TOP_N = 3
 ALLOCATIONS = [0.4, 0.3, 0.3]
 
-# 듀얼 모멘텀 설정
-ABSOLUTE_MOMENTUM_PERIOD = 63  # 3개월 (약 63 거래일)
+# 섹터 필터 설정
+SECTOR_MOMENTUM_PERIOD = 21  # 섹터 모멘텀 기간 (약 1개월)
+SECTOR_RSI_PERIOD = 14       # RSI 기간
+SECTOR_RSI_UPPER = 70        # RSI 과열 기준
 
-# 변동성 조절 설정
-TARGET_VOLATILITY = 0.15      # 목표 변동성 15%
-VOLATILITY_LOOKBACK = 20      # 변동성 계산 기간 (20일)
-MIN_WEIGHT = 0.2              # 최소 투자 비중 20%
-MAX_WEIGHT = 1.0              # 최대 투자 비중 100%
+# 섹터 ETF 매핑
+SECTOR_ETFS = {
+    'Technology': 'XLK',
+    'Information Technology': 'XLK',
+    'Health Care': 'XLV',
+    'Financials': 'XLF',
+    'Consumer Discretionary': 'XLY',
+    'Consumer Staples': 'XLP',
+    'Energy': 'XLE',
+    'Industrials': 'XLI',
+    'Materials': 'XLB',
+    'Utilities': 'XLU',
+    'Real Estate': 'XLRE',
+    'Communication Services': 'XLC'
+}
 
 
 # ============================================
-# 1. 데이터 전처리
+# 1. 섹터 ETF 데이터 다운로드
+# ============================================
+
+def get_sector_etf_data(start_date, end_date):
+    """
+    섹터 ETF 데이터 다운로드
+    """
+    etfs = list(set(SECTOR_ETFS.values())) + ['SPY']
+    
+    print(f"섹터 ETF 데이터 다운로드 중... ({len(etfs)}개)")
+    
+    data = yf.download(
+        etfs,
+        start=start_date,
+        end=end_date,
+        auto_adjust=True,
+        threads=True
+    )
+    
+    if 'Close' in data.columns.get_level_values(0):
+        price_df = data['Close']
+    else:
+        price_df = data
+    
+    return price_df
+
+
+# ============================================
+# 2. 섹터 성과 계산 (SPY 대비)
+# ============================================
+
+def calc_sector_performance(sector_df, period=SECTOR_MOMENTUM_PERIOD):
+    """
+    각 섹터의 SPY 대비 수익률 계산
+    
+    Returns:
+        DataFrame: 날짜별 섹터 초과 수익률
+    """
+    # 수익률 계산
+    returns = sector_df.pct_change(period)
+    
+    if 'SPY' not in returns.columns:
+        return pd.DataFrame()
+    
+    spy_return = returns['SPY']
+    
+    # SPY 대비 초과 수익률
+    excess_returns = returns.sub(spy_return, axis=0)
+    excess_returns = excess_returns.drop(columns=['SPY'], errors='ignore')
+    
+    return excess_returns
+
+
+# ============================================
+# 3. 섹터 RSI 계산
+# ============================================
+
+def calc_sector_rsi(sector_df, period=SECTOR_RSI_PERIOD):
+    """
+    각 섹터 ETF의 RSI 계산
+    """
+    rsi_df = pd.DataFrame(index=sector_df.index)
+    
+    for col in sector_df.columns:
+        if col == 'SPY':
+            continue
+        
+        delta = sector_df[col].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        rsi_df[col] = rsi
+    
+    return rsi_df
+
+
+# ============================================
+# 4. 투자 가능 섹터 선정
+# ============================================
+
+def get_valid_sectors(date, excess_returns, sector_rsi, version='A'):
+    """
+    투자 가능한 섹터 리스트 반환
+    
+    version:
+    - 'A': SPY 대비 수익률 > 0인 섹터
+    - 'B': A + RSI < 70
+    - 'C': B와 동일 (종목 선정에서 차이)
+    - 'D': SPY 대비 수익률 1위 섹터만
+    """
+    if date not in excess_returns.index:
+        return []
+    
+    # SPY 대비 수익률
+    sector_perf = excess_returns.loc[date].dropna()
+    
+    if version == 'D':
+        # 1위 섹터만
+        if sector_perf.empty:
+            return []
+        best_sector = sector_perf.idxmax()
+        return [best_sector]
+    
+    # SPY보다 좋은 섹터
+    good_sectors = sector_perf[sector_perf > 0].index.tolist()
+    
+    if version == 'A':
+        return good_sectors
+    
+    # RSI 필터 (버전 B, C)
+    if version in ['B', 'C']:
+        if date not in sector_rsi.index:
+            return good_sectors
+        
+        rsi_values = sector_rsi.loc[date]
+        
+        valid_sectors = []
+        for sector in good_sectors:
+            if sector in rsi_values.index:
+                if rsi_values[sector] < SECTOR_RSI_UPPER:
+                    valid_sectors.append(sector)
+            else:
+                valid_sectors.append(sector)
+        
+        return valid_sectors
+    
+    return good_sectors
+
+
+# ============================================
+# 5. ETF → 섹터 이름 역매핑
+# ============================================
+
+def get_etf_to_sector():
+    """ETF 심볼 → 섹터 이름 매핑"""
+    return {v: k for k, v in SECTOR_ETFS.items()}
+
+
+# ============================================
+# 6. 데이터 전처리
 # ============================================
 
 def prepare_price_data(df):
@@ -60,13 +210,12 @@ def prepare_price_data(df):
 
 def filter_tuesday(price_df):
     """화요일만 필터링"""
-    price_df = price_df.copy()
     mask = price_df.index.day_name() == 'Tuesday'
     return price_df[mask]
 
 
 # ============================================
-# 2. 모멘텀 점수 계산
+# 7. 모멘텀 점수 계산
 # ============================================
 
 def calc_momentum_scores(weekly_df):
@@ -81,57 +230,7 @@ def calc_momentum_scores(weekly_df):
 
 
 # ============================================
-# 3. 절대 모멘텀 계산 (버전 A, C)
-# ============================================
-
-def calc_absolute_momentum(price_df, period=ABSOLUTE_MOMENTUM_PERIOD):
-    """
-    SPY 절대 모멘텀 계산
-    
-    SPY의 N일 수익률 > 0 이면 True
-    """
-    if 'SPY' not in price_df.columns:
-        return pd.Series(True, index=price_df.index)
-    
-    spy = price_df['SPY']
-    spy_return = spy.pct_change(period)
-    
-    # True = 상승장, False = 하락장
-    absolute_momentum = spy_return > 0
-    
-    return absolute_momentum
-
-
-# ============================================
-# 4. 변동성 계산 (버전 B, C)
-# ============================================
-
-def calc_volatility_weight(price_df, lookback=VOLATILITY_LOOKBACK):
-    """
-    변동성 기반 투자 비중 계산
-    
-    투자 비중 = 목표 변동성 / 현재 변동성
-    """
-    if 'SPY' not in price_df.columns:
-        return pd.Series(1.0, index=price_df.index)
-    
-    spy = price_df['SPY']
-    daily_returns = spy.pct_change()
-    
-    # 20일 롤링 변동성 (연율화)
-    rolling_vol = daily_returns.rolling(lookback).std() * np.sqrt(252)
-    
-    # 투자 비중 계산
-    weight = TARGET_VOLATILITY / rolling_vol
-    
-    # 최소/최대 제한
-    weight = weight.clip(MIN_WEIGHT, MAX_WEIGHT)
-    
-    return weight
-
-
-# ============================================
-# 5. 매수일 매핑 생성
+# 8. 매수일 매핑
 # ============================================
 
 def create_trade_mapping(df):
@@ -140,7 +239,6 @@ def create_trade_mapping(df):
     date_weekday = {d: pd.Timestamp(d).day_name() for d in dates}
     
     trade_map = {}
-    
     for i, date in enumerate(dates):
         if date_weekday[date] == 'Tuesday':
             for j in range(i+1, len(dates)):
@@ -152,21 +250,20 @@ def create_trade_mapping(df):
 
 
 # ============================================
-# 6. 백테스트 핵심 로직
+# 9. 백테스트 핵심 로직
 # ============================================
 
-def run_backtest_core(df, version='A'):
+def run_backtest_core(df, sector_df, sector_map, version='A'):
     """
     백테스트 핵심 로직
     
     version:
-    - 'A': 듀얼 모멘텀만
-    - 'B': 변동성 조절만
-    - 'C': 둘 다 적용
-    - 'BASE': 기본 (비교용)
+    - 'A': 섹터 필터만
+    - 'B': 섹터 필터 + RSI
+    - 'C': 섹터 필터 + RSI + 섹터당 1종목
+    - 'D': 1위 섹터에서 Top 3
     """
     
-    # 데이터 준비
     df_daily = df.copy().sort_values('date').reset_index(drop=True)
     daily_dates = sorted(df_daily['date'].unique())
     
@@ -178,41 +275,37 @@ def run_backtest_core(df, version='A'):
     
     score_df, ret_1w = calc_momentum_scores(tuesday_df)
     
-    # 버전별 추가 계산
-    if version in ['A', 'C']:
-        absolute_momentum = calc_absolute_momentum(price_df)
-    else:
-        absolute_momentum = pd.Series(True, index=price_df.index)
+    # 섹터 성과 & RSI 계산
+    excess_returns = calc_sector_performance(sector_df)
+    sector_rsi = calc_sector_rsi(sector_df)
     
-    if version in ['B', 'C']:
-        volatility_weight = calc_volatility_weight(price_df)
-    else:
-        volatility_weight = pd.Series(1.0, index=price_df.index)
+    # ETF → 섹터 매핑
+    etf_to_sector = get_etf_to_sector()
     
     trade_map = create_trade_mapping(df)
     score_dates = score_df.dropna(how='all').index.tolist()
     
-    # 결과 저장
     portfolio_values = []
     trades = []
     
-    # 현재 상태
     cash = INITIAL_CAPITAL
     holdings = {}
     pending_order = None
     
-    # ----- 매일 시뮬레이션 -----
+    # 통계
+    skipped_by_sector = 0
+    skipped_by_rsi = 0
+    
     for i, date in enumerate(daily_dates):
         today_data = df_daily[df_daily['date'] == date]
         date_ts = pd.Timestamp(date)
         
-        # ----- 포트폴리오 가치 계산 -----
+        # 포트폴리오 가치
         portfolio_value = cash
         for symbol, info in holdings.items():
             stock = today_data[today_data['symbol'] == symbol]
             if not stock.empty:
-                current_price = stock.iloc[0]['close']
-                portfolio_value += info['shares'] * current_price
+                portfolio_value += info['shares'] * stock.iloc[0]['close']
         
         portfolio_values.append({
             'date': date,
@@ -220,7 +313,7 @@ def run_backtest_core(df, version='A'):
             'cash': cash
         })
         
-        # ----- 손절 체크 -----
+        # 손절 체크
         for symbol, info in list(holdings.items()):
             stock = today_data[today_data['symbol'] == symbol]
             if stock.empty:
@@ -249,44 +342,10 @@ def run_backtest_core(df, version='A'):
                 
                 del holdings[symbol]
         
-        # ----- 대기 중인 매수 주문 실행 -----
+        # 매수 주문 실행
         if pending_order is not None and pending_order['trade_date'] == date:
             order = pending_order
             pending_order = None
-            
-            # 절대 모멘텀 체크 (버전 A, C)
-            use_absolute = order.get('absolute_momentum', True)
-            
-            # 변동성 비중 (버전 B, C)
-            vol_weight = order.get('volatility_weight', 1.0)
-            
-            # 절대 모멘텀 실패 → 전량 매도 후 현금 보유
-            if not use_absolute:
-                for symbol, info in list(holdings.items()):
-                    stock = today_data[today_data['symbol'] == symbol]
-                    if not stock.empty:
-                        base_price = stock.iloc[0]['close']
-                        sell_price = base_price * (1 - SLIPPAGE)
-                        sell_amount = info['shares'] * sell_price
-                        commission = sell_amount * SELL_COMMISSION
-                        cash += sell_amount - commission
-                        
-                        return_rate = (sell_price - info['avg_price']) / info['avg_price']
-                        
-                        trades.append({
-                            'date': date,
-                            'symbol': symbol,
-                            'action': 'SELL_CASH',
-                            'shares': info['shares'],
-                            'price': sell_price,
-                            'amount': sell_amount,
-                            'commission': commission,
-                            'slippage': base_price * SLIPPAGE * info['shares'],
-                            'return_rate': return_rate
-                        })
-                
-                holdings = {}
-                continue  # 현금 보유, 매수 안 함
             
             new_picks = order['picks']
             new_scores = order['scores']
@@ -298,7 +357,7 @@ def run_backtest_core(df, version='A'):
             to_buy = new_holdings_set - current_holdings
             to_keep = current_holdings & new_holdings_set
             
-            # ----- 1. 매도할 종목 -----
+            # 매도
             for symbol in to_sell:
                 if symbol not in holdings:
                     continue
@@ -329,26 +388,23 @@ def run_backtest_core(df, version='A'):
                     
                     del holdings[symbol]
             
-            # ----- 2. 비중 계산 (변동성 조절 적용) -----
+            # 비중 계산
             n_picks = len(new_picks)
             if n_picks >= 3:
-                base_allocations = ALLOCATIONS[:3]
+                allocations = ALLOCATIONS[:3]
             elif n_picks == 2:
-                base_allocations = [0.5, 0.5]
+                allocations = [0.5, 0.5]
             elif n_picks == 1:
-                base_allocations = [1.0]
+                allocations = [1.0]
             else:
-                base_allocations = []
-            
-            # 변동성 비중 적용
-            adjusted_allocations = [a * vol_weight for a in base_allocations]
+                allocations = []
             
             target_allocations = {}
             for j, symbol in enumerate(new_picks):
-                if j < len(adjusted_allocations):
-                    target_allocations[symbol] = adjusted_allocations[j]
+                if j < len(allocations):
+                    target_allocations[symbol] = allocations[j]
             
-            # ----- 3. 유지 종목 비중 조절 -----
+            # 유지 종목 비중 조절
             for symbol in to_keep:
                 if symbol not in holdings or symbol not in target_allocations:
                     continue
@@ -385,8 +441,7 @@ def run_backtest_core(df, version='A'):
                                 'amount': buy_amount,
                                 'commission': commission,
                                 'slippage': current_price * SLIPPAGE * diff_shares,
-                                'return_rate': 0,
-                                'score': target_allocations.get(symbol, 0)
+                                'return_rate': 0
                             })
                     else:
                         sell_price = current_price * (1 - SLIPPAGE)
@@ -408,7 +463,7 @@ def run_backtest_core(df, version='A'):
                             'return_rate': 0
                         })
             
-            # ----- 4. 신규 매수 -----
+            # 신규 매수
             for symbol in to_buy:
                 if symbol not in target_allocations:
                     continue
@@ -456,7 +511,7 @@ def run_backtest_core(df, version='A'):
                         'score': score
                     })
         
-        # ----- 화요일: 점수 계산 & 종목 선정 -----
+        # 화요일: 종목 선정
         if date_ts not in score_dates:
             continue
         
@@ -465,58 +520,98 @@ def run_backtest_core(df, version='A'):
         
         trade_date = trade_map[date]
         
-        # ----- 시장 필터 -----
+        # 시장 필터
         if date_ts not in ret_1w.index:
             continue
         
         market_momentum = ret_1w.loc[date_ts].mean()
-        
         if market_momentum <= 0:
             continue
         
-        # ----- 절대 모멘텀 체크 (버전 A, C) -----
-        use_absolute = True
-        if version in ['A', 'C']:
-            if date_ts in absolute_momentum.index:
-                use_absolute = absolute_momentum.loc[date_ts]
-            else:
-                # 가장 가까운 날짜 찾기
-                closest_date = absolute_momentum.index[absolute_momentum.index <= date_ts]
-                if len(closest_date) > 0:
-                    use_absolute = absolute_momentum.loc[closest_date[-1]]
-        
-        # ----- 변동성 비중 (버전 B, C) -----
-        vol_weight = 1.0
-        if version in ['B', 'C']:
-            if date_ts in volatility_weight.index:
-                vol_weight = volatility_weight.loc[date_ts]
-            else:
-                closest_date = volatility_weight.index[volatility_weight.index <= date_ts]
-                if len(closest_date) > 0:
-                    vol_weight = volatility_weight.loc[closest_date[-1]]
-            
-            if pd.isna(vol_weight):
-                vol_weight = 1.0
-        
-        # ----- 상위 종목 선정 -----
+        # 점수
         if date_ts not in score_df.index:
             continue
         
         current_scores = score_df.loc[date_ts].drop(labels=['SPY'], errors='ignore').dropna()
-        
         if current_scores.empty:
             continue
         
-        top_n = current_scores.nlargest(TOP_N)
+        # ----- 섹터 필터 적용 -----
+        valid_etfs = get_valid_sectors(date_ts, excess_returns, sector_rsi, version)
         
-        # ----- 매수 주문 대기 -----
+        # ETF → 섹터 이름 변환
+        valid_sectors = []
+        for etf in valid_etfs:
+            if etf in etf_to_sector:
+                valid_sectors.append(etf_to_sector[etf])
+        
+        # 종목별 섹터 확인
+        filtered_scores = pd.Series(dtype=float)
+        
+        if version == 'C':
+            # 섹터당 1종목
+            sector_picked = set()
+            
+            for symbol in current_scores.sort_values(ascending=False).index:
+                if symbol not in sector_map:
+                    continue
+                
+                stock_sector = sector_map[symbol]
+                
+                if stock_sector not in valid_sectors:
+                    continue
+                
+                if stock_sector in sector_picked:
+                    continue
+                
+                filtered_scores[symbol] = current_scores[symbol]
+                sector_picked.add(stock_sector)
+                
+                if len(filtered_scores) >= TOP_N:
+                    break
+        
+        elif version == 'D':
+            # 1위 섹터에서 Top 3
+            for symbol in current_scores.sort_values(ascending=False).index:
+                if symbol not in sector_map:
+                    continue
+                
+                stock_sector = sector_map[symbol]
+                
+                if stock_sector not in valid_sectors:
+                    continue
+                
+                filtered_scores[symbol] = current_scores[symbol]
+                
+                if len(filtered_scores) >= TOP_N:
+                    break
+        
+        else:
+            # 버전 A, B: valid_sectors에 속한 종목만
+            for symbol in current_scores.sort_values(ascending=False).index:
+                if symbol not in sector_map:
+                    continue
+                
+                stock_sector = sector_map[symbol]
+                
+                if stock_sector not in valid_sectors:
+                    continue
+                
+                filtered_scores[symbol] = current_scores[symbol]
+                
+                if len(filtered_scores) >= TOP_N:
+                    break
+        
+        if filtered_scores.empty:
+            continue
+        
+        top_n = filtered_scores.nlargest(min(TOP_N, len(filtered_scores)))
+        
         pending_order = {
             'score_date': date,
             'trade_date': trade_date,
             'picks': top_n.index.tolist(),
-            'scores': top_n.values.tolist(),
-            'absolute_momentum': use_absolute,
-            'volatility_weight': vol_weight
+            'scores': top_n.values.tolist()
         }
     
     portfolio_df = pd.DataFrame(portfolio_values)
@@ -526,101 +621,106 @@ def run_backtest_core(df, version='A'):
 
 
 # ============================================
-# 7. 버전별 백테스트 실행
+# 10. 버전별 백테스트
 # ============================================
 
-def run_backtest_A(df):
-    """버전 A: 듀얼 모멘텀만"""
-    print("[버전 A] 듀얼 모멘텀 (절대 + 상대)")
-    portfolio_df, trades_df = run_backtest_core(df, version='A')
+def run_backtest_A(df, sector_df, sector_map):
+    """버전 A: 섹터 필터만"""
+    print("[버전 A] 섹터 필터 (SPY 대비)")
+    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='A')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
-def run_backtest_B(df):
-    """버전 B: 변동성 조절만"""
-    print("[버전 B] 변동성 조절")
-    portfolio_df, trades_df = run_backtest_core(df, version='B')
+def run_backtest_B(df, sector_df, sector_map):
+    """버전 B: 섹터 필터 + RSI"""
+    print("[버전 B] 섹터 필터 + RSI")
+    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='B')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
-def run_backtest_C(df):
-    """버전 C: 둘 다 적용"""
-    print("[버전 C] 듀얼 모멘텀 + 변동성 조절")
-    portfolio_df, trades_df = run_backtest_core(df, version='C')
+def run_backtest_C(df, sector_df, sector_map):
+    """버전 C: 섹터 필터 + RSI + 섹터당 1종목"""
+    print("[버전 C] 섹터 필터 + RSI + 섹터당 1종목")
+    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='C')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
-def run_backtest_base(df):
-    """기본 버전 (비교용)"""
-    print("[BASE] 기본 전략")
-    portfolio_df, trades_df = run_backtest_core(df, version='BASE')
+def run_backtest_D(df, sector_df, sector_map):
+    """버전 D: 1위 섹터에서 Top 3"""
+    print("[버전 D] 1위 섹터에서 Top 3")
+    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='D')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
 # ============================================
-# 8. 전체 비교 실행
+# 11. 전체 비교 실행
 # ============================================
 
 def run_all_versions(df):
-    """3가지 버전 + 기본 비교"""
+    """4가지 버전 비교"""
     print("\n" + "=" * 80)
-    print("🧪 백테스트 버전 비교")
-    print(f"   목표 변동성: {TARGET_VOLATILITY*100:.0f}%")
-    print(f"   절대 모멘텀 기간: {ABSOLUTE_MOMENTUM_PERIOD}일 (약 3개월)")
+    print("🧪 섹터 필터 백테스트 비교")
+    print(f"   섹터 모멘텀 기간: {SECTOR_MOMENTUM_PERIOD}일")
+    print(f"   섹터 RSI 상한: {SECTOR_RSI_UPPER}")
     print("=" * 80 + "\n")
+    
+    # 섹터 정보 준비
+    from src.data import get_sp500_list
+    sp500 = get_sp500_list()
+    sector_map = dict(zip(sp500['symbol'], sp500['sector']))
+    
+    # 섹터 ETF 데이터 다운로드
+    start_date = df['date'].min()
+    end_date = df['date'].max()
+    sector_df = get_sector_etf_data(start_date, end_date)
     
     results = {}
     
-    results['BASE'] = run_backtest_base(df)
-    results['A'] = run_backtest_A(df)
-    results['B'] = run_backtest_B(df)
-    results['C'] = run_backtest_C(df)
+    results['A'] = run_backtest_A(df, sector_df, sector_map)
+    results['B'] = run_backtest_B(df, sector_df, sector_map)
+    results['C'] = run_backtest_C(df, sector_df, sector_map)
+    results['D'] = run_backtest_D(df, sector_df, sector_map)
     
     # 비교 테이블
     print("\n" + "=" * 90)
     print("📊 결과 비교")
     print("=" * 90)
     
-    print(f"\n{'버전':<8} {'설명':<30} {'총수익률':>12} {'CAGR':>10} {'MDD':>10} {'샤프':>8}")
+    print(f"\n{'버전':<6} {'설명':<35} {'총수익률':>12} {'CAGR':>10} {'MDD':>10} {'샤프':>8}")
     print("-" * 90)
     
     descriptions = {
-        'BASE': '기본 (비교용)',
-        'A': '듀얼 모멘텀 (절대+상대)',
-        'B': '변동성 조절',
-        'C': '듀얼 모멘텀 + 변동성 조절'
+        'A': '섹터 필터 (SPY 대비)',
+        'B': '섹터 필터 + RSI',
+        'C': '섹터 필터 + RSI + 섹터당 1종목',
+        'D': '1위 섹터에서 Top 3'
     }
     
-    for ver in ['BASE', 'A', 'B', 'C']:
+    for ver in ['A', 'B', 'C', 'D']:
         m = results[ver]['metrics']
         desc = descriptions[ver]
-        print(f"{ver:<8} {desc:<30} {m['total_return']*100:>11.2f}% {m['cagr']*100:>9.2f}% {m['mdd']*100:>9.2f}% {m['sharpe_ratio']:>8.2f}")
+        print(f"{ver:<6} {desc:<35} {m['total_return']*100:>11.2f}% {m['cagr']*100:>9.2f}% {m['mdd']*100:>9.2f}% {m['sharpe_ratio']:>8.2f}")
     
     print("-" * 90)
     
-    spy_ret = results['BASE']['metrics']['spy_return']
-    print(f"{'SPY':<8} {'벤치마크':<30} {spy_ret*100:>11.2f}%")
+    spy_ret = results['A']['metrics']['spy_return']
+    print(f"{'SPY':<6} {'벤치마크':<35} {spy_ret*100:>11.2f}%")
     
     print("=" * 90)
     
     # 거래 통계
-    print("\n💸 거래 & 비용 통계")
+    print("\n💸 거래 통계")
     print("-" * 90)
-    print(f"{'버전':<8} {'거래횟수':>10} {'수수료':>15} {'슬리피지':>15} {'현금보유일':>12}")
+    print(f"{'버전':<6} {'거래횟수':>10} {'수수료':>15} {'슬리피지':>15} {'손절횟수':>10}")
     print("-" * 90)
     
-    for ver in ['BASE', 'A', 'B', 'C']:
+    for ver in ['A', 'B', 'C', 'D']:
         m = results[ver]['metrics']
-        t = results[ver]['trades']
-        
-        # 현금 보유 일수 계산
-        cash_days = len(t[t['action'] == 'SELL_CASH']) if not t.empty and 'action' in t.columns else 0
-        
-        print(f"{ver:<8} {m['total_trades']:>10} ${m['total_commission']:>14.2f} ${m['total_slippage']:>14.2f} {cash_days:>12}")
+        print(f"{ver:<6} {m['total_trades']:>10} ${m['total_commission']:>14.2f} ${m['total_slippage']:>14.2f} {m['stop_loss_count']:>10}")
     
     print("=" * 90)
     
@@ -628,7 +728,7 @@ def run_all_versions(df):
 
 
 # ============================================
-# 9. 성과 지표 계산
+# 12. 성과 지표 계산
 # ============================================
 
 def calculate_metrics(portfolio_df, trades_df, df):
@@ -672,7 +772,6 @@ def calculate_metrics(portfolio_df, trades_df, df):
     sell_count = len(trades_df[trades_df['action'] == 'SELL']) if not trades_df.empty else 0
     add_count = len(trades_df[trades_df['action'] == 'ADD']) if not trades_df.empty else 0
     reduce_count = len(trades_df[trades_df['action'] == 'REDUCE']) if not trades_df.empty else 0
-    cash_count = len(trades_df[trades_df['action'] == 'SELL_CASH']) if not trades_df.empty else 0
     
     return {
         'initial_capital': initial,
@@ -690,7 +789,6 @@ def calculate_metrics(portfolio_df, trades_df, df):
         'sell_count': sell_count,
         'add_count': add_count,
         'reduce_count': reduce_count,
-        'cash_count': cash_count,
         'total_commission': total_commission,
         'total_slippage': total_slippage,
         'stop_loss_count': stop_loss_count
@@ -698,7 +796,7 @@ def calculate_metrics(portfolio_df, trades_df, df):
 
 
 # ============================================
-# 10. 결과 출력
+# 13. 결과 출력
 # ============================================
 
 def print_metrics(metrics, trades_df=None):
@@ -728,7 +826,6 @@ def print_metrics(metrics, trades_df=None):
     print(f"    - 전량 매도 (SELL): {metrics['sell_count']}회")
     print(f"    - 추가 매수 (ADD): {metrics['add_count']}회")
     print(f"    - 일부 매도 (REDUCE): {metrics['reduce_count']}회")
-    print(f"    - 현금 전환 (CASH): {metrics['cash_count']}회")
     print(f"    - 손절 (STOP_LOSS): {metrics['stop_loss_count']}회")
     print(f"  총 수수료: ${metrics['total_commission']:,.2f}")
     print(f"  총 슬리피지: ${metrics['total_slippage']:,.2f}")
@@ -738,16 +835,16 @@ def print_metrics(metrics, trades_df=None):
 
 
 # ============================================
-# 11. 그래프 (버전 비교)
+# 14. 그래프
 # ============================================
 
 def plot_comparison(results, df):
     """4가지 버전 비교 그래프"""
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
-    colors = {'BASE': 'gray', 'A': 'blue', 'B': 'green', 'C': 'red'}
+    colors = {'A': 'blue', 'B': 'green', 'C': 'red', 'D': 'purple'}
     
-    # 1. 포트폴리오 가치 비교
+    # 1. 포트폴리오 가치
     ax1 = axes[0, 0]
     
     for ver, res in results.items():
@@ -762,11 +859,11 @@ def plot_comparison(results, df):
         ax1.plot(spy['date'], spy['normalized'], 
                  label='SPY', linewidth=2, linestyle='--', color='orange')
     
-    ax1.set_title('Portfolio Value Comparison (Start=100)', fontsize=12)
+    ax1.set_title('Portfolio Value (Start=100)', fontsize=12)
     ax1.legend(fontsize=10)
     ax1.grid(True, alpha=0.3)
     
-    # 2. 총 수익률 & CAGR 비교
+    # 2. 수익률 비교
     ax2 = axes[0, 1]
     versions = list(results.keys())
     x = np.arange(len(versions))
@@ -775,24 +872,23 @@ def plot_comparison(results, df):
     returns = [results[v]['metrics']['total_return'] * 100 for v in versions]
     cagrs = [results[v]['metrics']['cagr'] * 100 for v in versions]
     
-    bars1 = ax2.bar(x - width/2, returns, width, label='Total Return', color='steelblue')
-    bars2 = ax2.bar(x + width/2, cagrs, width, label='CAGR', color='lightsteelblue')
-    
-    ax2.axhline(y=results['BASE']['metrics']['spy_return']*100, color='orange', linestyle='--', label='SPY')
+    ax2.bar(x - width/2, returns, width, label='Total Return', color='steelblue')
+    ax2.bar(x + width/2, cagrs, width, label='CAGR', color='lightsteelblue')
+    ax2.axhline(y=results['A']['metrics']['spy_return']*100, color='orange', linestyle='--', label='SPY')
     ax2.set_xticks(x)
     ax2.set_xticklabels(versions)
     ax2.set_title('Total Return & CAGR (%)', fontsize=12)
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     
-    # 3. MDD 비교
+    # 3. MDD
     ax3 = axes[1, 0]
     mdds = [results[v]['metrics']['mdd'] * 100 for v in versions]
     ax3.bar(versions, mdds, color=[colors[v] for v in versions])
     ax3.set_title('Maximum Drawdown (%)', fontsize=12)
     ax3.grid(True, alpha=0.3)
     
-    # 4. 샤프 비율 비교
+    # 4. 샤프
     ax4 = axes[1, 1]
     sharpes = [results[v]['metrics']['sharpe_ratio'] for v in versions]
     ax4.bar(versions, sharpes, color=[colors[v] for v in versions])
@@ -803,7 +899,7 @@ def plot_comparison(results, df):
     plt.show()
     
     print("\n📋 버전 설명:")
-    print("  BASE: 기본 전략 (비교용)")
-    print("  A: 듀얼 모멘텀 (SPY 3개월 > 0 일 때만 매수)")
-    print("  B: 변동성 조절 (변동성 높으면 비중 축소)")
-    print("  C: 듀얼 모멘텀 + 변동성 조절 (둘 다 적용)")
+    print("  A: 섹터 필터만 (SPY 대비 수익률 > 0인 섹터)")
+    print("  B: 섹터 필터 + RSI (RSI < 70)")
+    print("  C: 섹터 필터 + RSI + 섹터당 1종목")
+    print("  D: SPY 대비 1위 섹터에서 Top 3 종목")
