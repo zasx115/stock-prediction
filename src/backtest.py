@@ -498,10 +498,9 @@ def run_backtest(df):
             for j, symbol in enumerate(new_picks):
                 if j < len(allocations):
                     target_allocations[symbol] = allocations[j]
-            
-            # --- [5-3-3] 유지 종목 비중 조절 ---
-            # 같은 종목이면 비중만 조절 (거래 최소화)
-            
+
+
+           # --- [5-3-3] 유지 종목 비중 조절 ---
             for symbol in to_keep:
                 if symbol not in holdings or symbol not in target_allocations:
                     continue
@@ -511,16 +510,18 @@ def run_backtest(df):
                     continue
                 
                 current_price = stock.iloc[0]['close']
-                
-                # 현재 가치 vs 목표 가치
                 current_value = holdings[symbol]['shares'] * current_price
                 target_value = portfolio_value * target_allocations[symbol]
                 
                 diff_value = target_value - current_value
                 diff_shares = int(abs(diff_value) / current_price)
                 
-                # 비중 차이가 5% 이상일 때만 조절 (너무 작은 조절은 비용만 발생)
+                # 비중 차이가 5% 이상일 때만 조절
                 if abs(diff_value) / portfolio_value > 0.05 and diff_shares > 0:
+                    
+                    # 점수 찾기 (수정됨)
+                    score_idx = new_picks.index(symbol) if symbol in new_picks else -1
+                    score = new_scores[score_idx] if 0 <= score_idx < len(new_scores) else 0
                     
                     if diff_value > 0:
                         # --- 추가 매수 ---
@@ -531,7 +532,6 @@ def run_backtest(df):
                         if cash >= buy_amount + commission:
                             cash -= (buy_amount + commission)
                             
-                            # 평균 단가 재계산
                             old_shares = holdings[symbol]['shares']
                             old_avg = holdings[symbol]['avg_price']
                             new_shares = old_shares + diff_shares
@@ -549,7 +549,8 @@ def run_backtest(df):
                                 'amount': buy_amount,
                                 'commission': commission,
                                 'slippage': current_price * SLIPPAGE * diff_shares,
-                                'return_rate': 0
+                                'return_rate': 0,
+                                'score': score  # 점수 추가!
                             })
                     
                     else:
@@ -570,7 +571,8 @@ def run_backtest(df):
                             'amount': sell_amount,
                             'commission': commission,
                             'slippage': current_price * SLIPPAGE * diff_shares,
-                            'return_rate': 0
+                            'return_rate': 0,
+                            'score': score  # 점수 추가!
                         })
             
             # --- [5-3-4] 신규 매수 ---
