@@ -1,11 +1,11 @@
 # ============================================
 # 파일명: src/backtest.py
-# 설명: 백테스트 (섹터 필터 4가지 버전)
+# 설명: 백테스트 (상관관계 + 중장기 모멘텀 4가지 버전)
 # 
-# 버전 A: 섹터 필터만 (SPY 대비)
-# 버전 B: 섹터 필터 + RSI
-# 버전 C: 섹터 필터 + RSI + 섹터당 1종목
-# 버전 D: SPY 대비 1위 섹터에서 모멘텀 3종목
+# 버전 A: SPY 상관관계 > 0.5
+# 버전 B: 중장기 모멘텀 (1개월, 3개월, 6개월)
+# 버전 C: 상관관계 + 중장기 모멘텀
+# 버전 D: C + 섹터필터 + RSI + 섹터당 1종목
 # ============================================
 
 import pandas as pd
@@ -24,17 +24,27 @@ SELL_COMMISSION = 0.0025
 SLIPPAGE = 0.001
 STOP_LOSS = -0.07
 
+# 단기 모멘텀 (기존)
 WEIGHT_1W = 3.5
 WEIGHT_2W = 2.5
 WEIGHT_3W = 1.5
 
+# 중장기 모멘텀 (새로운)
+WEIGHT_1M = 3.5   # 1개월
+WEIGHT_3M = 2.5   # 3개월
+WEIGHT_6M = 1.5   # 6개월
+
 TOP_N = 3
 ALLOCATIONS = [0.4, 0.3, 0.3]
 
+# 상관관계 설정
+CORRELATION_PERIOD = 60      # 상관관계 계산 기간 (60일)
+CORRELATION_THRESHOLD = 0.5  # 최소 상관관계
+
 # 섹터 필터 설정
-SECTOR_MOMENTUM_PERIOD = 21  # 섹터 모멘텀 기간 (약 1개월)
-SECTOR_RSI_PERIOD = 14       # RSI 기간
-SECTOR_RSI_UPPER = 70        # RSI 과열 기준
+SECTOR_MOMENTUM_PERIOD = 21
+SECTOR_RSI_PERIOD = 14
+SECTOR_RSI_UPPER = 70
 
 # 섹터 ETF 매핑
 SECTOR_ETFS = {
@@ -54,13 +64,106 @@ SECTOR_ETFS = {
 
 
 # ============================================
-# 1. 섹터 ETF 데이터 다운로드
+# 1. 데이터 전처리
+# ============================================
+
+def prepare_price_data(df):
+    """피벗 테이블로 변환"""
+    price_df = df.pivot(index='date', columns='symbol', values='close')
+    return price_df
+
+
+def filter_tuesday(price_df):
+    """화요일만 필터링"""
+    mask = price_df.index.day_name() == 'Tuesday'
+    return price_df[mask]
+
+
+# ============================================
+# 2. SPY 상관관계 계산
+# ============================================
+
+def calc_spy_correlation(price_df, period=CORRELATION_PERIOD):
+    """
+    각 종목과 SPY의 상관관계 계산
+    
+    Returns:
+        DataFrame: 날짜별 종목별 상관관계
+    """
+    if 'SPY' not in price_df.columns:
+        return pd.DataFrame()
+    
+    # 일별 수익률
+    returns = price_df.pct_change()
+    spy_returns = returns['SPY']
+    
+    # 롤링 상관관계
+    correlation_df = pd.DataFrame(index=price_df.index)
+    
+    for col in returns.columns:
+        if col == 'SPY':
+            continue
+        correlation_df[col] = returns[col].rolling(period).corr(spy_returns)
+    
+    return correlation_df
+
+
+def get_high_correlation_stocks(date, correlation_df, threshold=CORRELATION_THRESHOLD):
+    """
+    SPY와 상관관계 높은 종목 리스트 반환
+    """
+    if date not in correlation_df.index:
+        return []
+    
+    corr_values = correlation_df.loc[date].dropna()
+    high_corr = corr_values[corr_values > threshold]
+    
+    return high_corr.index.tolist()
+
+
+# ============================================
+# 3. 모멘텀 점수 계산
+# ============================================
+
+def calc_momentum_short(weekly_df):
+    """
+    단기 모멘텀 (기존)
+    (1주×3.5) + (2주×2.5) + (3주×1.5)
+    """
+    ret_1w = weekly_df.pct_change(1)
+    ret_2w = weekly_df.pct_change(2)
+    ret_3w = weekly_df.pct_change(3)
+    
+    score_df = (ret_1w * WEIGHT_1W) + (ret_2w * WEIGHT_2W) + (ret_3w * WEIGHT_3W)
+    
+    return score_df, ret_1w
+
+
+def calc_momentum_long(weekly_df):
+    """
+    중장기 모멘텀 (새로운)
+    (1개월×3.5) + (3개월×2.5) + (6개월×1.5)
+    
+    주 1회 데이터 기준:
+    - 4회 전 = 1개월
+    - 12회 전 = 3개월
+    - 24회 전 = 6개월
+    """
+    ret_1m = weekly_df.pct_change(4)    # 1개월
+    ret_3m = weekly_df.pct_change(12)   # 3개월
+    ret_6m = weekly_df.pct_change(24)   # 6개월
+    
+    score_df = (ret_1m * WEIGHT_1M) + (ret_3m * WEIGHT_3M) + (ret_6m * WEIGHT_6M)
+    
+    return score_df, ret_1m
+
+
+# ============================================
+# 4. 섹터 ETF 데이터
 # ============================================
 
 def get_sector_etf_data(start_date, end_date):
-    """
-    섹터 ETF 데이터 다운로드
-    """
+    """섹터 ETF 데이터 다운로드"""
     etfs = list(set(SECTOR_ETFS.values())) + ['SPY']
     
     print(f"섹터 ETF 데이터 다운로드 중... ({len(etfs)}개)")
@@ -81,40 +184,22 @@ def get_sector_etf_data(start_date, end_date):
     return price_df
 
 
-# ============================================
-# 2. 섹터 성과 계산 (SPY 대비)
-# ============================================
-
 def calc_sector_performance(sector_df, period=SECTOR_MOMENTUM_PERIOD):
-    """
-    각 섹터의 SPY 대비 수익률 계산
-    
-    Returns:
-        DataFrame: 날짜별 섹터 초과 수익률
-    """
-    # 수익률 계산
+    """섹터 SPY 대비 수익률"""
     returns = sector_df.pct_change(period)
     
     if 'SPY' not in returns.columns:
         return pd.DataFrame()
     
     spy_return = returns['SPY']
-    
-    # SPY 대비 초과 수익률
     excess_returns = returns.sub(spy_return, axis=0)
     excess_returns = excess_returns.drop(columns=['SPY'], errors='ignore')
     
     return excess_returns
 
 
-# ============================================
-# 3. 섹터 RSI 계산
-# ============================================
-
 def calc_sector_rsi(sector_df, period=SECTOR_RSI_PERIOD):
-    """
-    각 섹터 ETF의 RSI 계산
-    """
+    """섹터 RSI 계산"""
     rsi_df = pd.DataFrame(index=sector_df.index)
     
     for col in sector_df.columns:
@@ -136,101 +221,37 @@ def calc_sector_rsi(sector_df, period=SECTOR_RSI_PERIOD):
     return rsi_df
 
 
-# ============================================
-# 4. 투자 가능 섹터 선정
-# ============================================
-
-def get_valid_sectors(date, excess_returns, sector_rsi, version='A'):
-    """
-    투자 가능한 섹터 리스트 반환
-    
-    version:
-    - 'A': SPY 대비 수익률 > 0인 섹터
-    - 'B': A + RSI < 70
-    - 'C': B와 동일 (종목 선정에서 차이)
-    - 'D': SPY 대비 수익률 1위 섹터만
-    """
+def get_valid_sectors(date, excess_returns, sector_rsi):
+    """SPY 대비 좋고 RSI < 70인 섹터"""
     if date not in excess_returns.index:
         return []
     
-    # SPY 대비 수익률
     sector_perf = excess_returns.loc[date].dropna()
-    
-    if version == 'D':
-        # 1위 섹터만
-        if sector_perf.empty:
-            return []
-        best_sector = sector_perf.idxmax()
-        return [best_sector]
-    
-    # SPY보다 좋은 섹터
     good_sectors = sector_perf[sector_perf > 0].index.tolist()
     
-    if version == 'A':
+    if date not in sector_rsi.index:
         return good_sectors
     
-    # RSI 필터 (버전 B, C)
-    if version in ['B', 'C']:
-        if date not in sector_rsi.index:
-            return good_sectors
-        
-        rsi_values = sector_rsi.loc[date]
-        
-        valid_sectors = []
-        for sector in good_sectors:
-            if sector in rsi_values.index:
-                if rsi_values[sector] < SECTOR_RSI_UPPER:
-                    valid_sectors.append(sector)
-            else:
-                valid_sectors.append(sector)
-        
-        return valid_sectors
+    rsi_values = sector_rsi.loc[date]
     
-    return good_sectors
+    valid_sectors = []
+    for sector in good_sectors:
+        if sector in rsi_values.index:
+            if rsi_values[sector] < SECTOR_RSI_UPPER:
+                valid_sectors.append(sector)
+        else:
+            valid_sectors.append(sector)
+    
+    return valid_sectors
 
-
-# ============================================
-# 5. ETF → 섹터 이름 역매핑
-# ============================================
 
 def get_etf_to_sector():
-    """ETF 심볼 → 섹터 이름 매핑"""
+    """ETF → 섹터 매핑"""
     return {v: k for k, v in SECTOR_ETFS.items()}
 
 
 # ============================================
-# 6. 데이터 전처리
-# ============================================
-
-def prepare_price_data(df):
-    """피벗 테이블로 변환"""
-    price_df = df.pivot(index='date', columns='symbol', values='close')
-    return price_df
-
-
-def filter_tuesday(price_df):
-    """화요일만 필터링"""
-    mask = price_df.index.day_name() == 'Tuesday'
-    return price_df[mask]
-
-
-# ============================================
-# 7. 모멘텀 점수 계산
-# ============================================
-
-def calc_momentum_scores(weekly_df):
-    """모멘텀 점수 계산"""
-    ret_1w = weekly_df.pct_change(1)
-    ret_2w = weekly_df.pct_change(2)
-    ret_3w = weekly_df.pct_change(3)
-    
-    score_df = (ret_1w * WEIGHT_1W) + (ret_2w * WEIGHT_2W) + (ret_3w * WEIGHT_3W)
-    
-    return score_df, ret_1w
-
-
-# ============================================
-# 8. 매수일 매핑
+# 5. 매수일 매핑
 # ============================================
 
 def create_trade_mapping(df):
@@ -250,18 +271,18 @@ def create_trade_mapping(df):
 
 
 # ============================================
-# 9. 백테스트 핵심 로직
+# 6. 백테스트 핵심 로직
 # ============================================
 
-def run_backtest_core(df, sector_df, sector_map, version='A'):
+def run_backtest_core(df, version='A', sector_df=None, sector_map=None):
     """
     백테스트 핵심 로직
     
     version:
-    - 'A': 섹터 필터만
-    - 'B': 섹터 필터 + RSI
-    - 'C': 섹터 필터 + RSI + 섹터당 1종목
-    - 'D': 1위 섹터에서 Top 3
+    - 'A': SPY 상관관계 > 0.5
+    - 'B': 중장기 모멘텀
+    - 'C': 상관관계 + 중장기 모멘텀
+    - 'D': C + 섹터필터
     """
     
     df_daily = df.copy().sort_values('date').reset_index(drop=True)
@@ -273,14 +294,27 @@ def run_backtest_core(df, sector_df, sector_map, version='A'):
     if 'SPY' in tuesday_df.columns:
         tuesday_df = tuesday_df.dropna(subset=['SPY'])
     
-    score_df, ret_1w = calc_momentum_scores(tuesday_df)
+    # 버전별 모멘텀 계산
+    if version in ['B', 'C', 'D']:
+        score_df, ret_1m = calc_momentum_long(tuesday_df)
+    else:
+        score_df, ret_1m = calc_momentum_short(tuesday_df)
     
-    # 섹터 성과 & RSI 계산
-    excess_returns = calc_sector_performance(sector_df)
-    sector_rsi = calc_sector_rsi(sector_df)
+    # 상관관계 계산 (버전 A, C, D)
+    if version in ['A', 'C', 'D']:
+        correlation_df = calc_spy_correlation(price_df)
+    else:
+        correlation_df = pd.DataFrame()
     
-    # ETF → 섹터 매핑
-    etf_to_sector = get_etf_to_sector()
+    # 섹터 필터 (버전 D)
+    if version == 'D' and sector_df is not None:
+        excess_returns = calc_sector_performance(sector_df)
+        sector_rsi = calc_sector_rsi(sector_df)
+        etf_to_sector = get_etf_to_sector()
+    else:
+        excess_returns = pd.DataFrame()
+        sector_rsi = pd.DataFrame()
+        etf_to_sector = {}
     
     trade_map = create_trade_mapping(df)
     score_dates = score_df.dropna(how='all').index.tolist()
@@ -291,10 +325,6 @@ def run_backtest_core(df, sector_df, sector_map, version='A'):
     cash = INITIAL_CAPITAL
     holdings = {}
     pending_order = None
-    
-    # 통계
-    skipped_by_sector = 0
-    skipped_by_rsi = 0
     
     for i, date in enumerate(daily_dates):
         today_data = df_daily[df_daily['date'] == date]
@@ -521,10 +551,10 @@ def run_backtest_core(df, sector_df, sector_map, version='A'):
         trade_date = trade_map[date]
         
         # 시장 필터
-        if date_ts not in ret_1w.index:
+        if date_ts not in ret_1m.index:
             continue
         
-        market_momentum = ret_1w.loc[date_ts].mean()
+        market_momentum = ret_1m.loc[date_ts].mean()
         if market_momentum <= 0:
             continue
         
@@ -536,23 +566,25 @@ def run_backtest_core(df, sector_df, sector_map, version='A'):
         if current_scores.empty:
             continue
         
-        # ----- 섹터 필터 적용 -----
-        valid_etfs = get_valid_sectors(date_ts, excess_returns, sector_rsi, version)
+        # ----- 필터 적용 -----
+        filtered_scores = current_scores.copy()
         
-        # ETF → 섹터 이름 변환
-        valid_sectors = []
-        for etf in valid_etfs:
-            if etf in etf_to_sector:
-                valid_sectors.append(etf_to_sector[etf])
+        # 상관관계 필터 (버전 A, C, D)
+        if version in ['A', 'C', 'D'] and not correlation_df.empty:
+            high_corr_stocks = get_high_correlation_stocks(date_ts, correlation_df)
+            if high_corr_stocks:
+                filtered_scores = filtered_scores[filtered_scores.index.isin(high_corr_stocks)]
         
-        # 종목별 섹터 확인
-        filtered_scores = pd.Series(dtype=float)
-        
-        if version == 'C':
+        # 섹터 필터 (버전 D)
+        if version == 'D' and sector_map is not None:
+            valid_etfs = get_valid_sectors(date_ts, excess_returns, sector_rsi)
+            valid_sectors = [etf_to_sector.get(etf, etf) for etf in valid_etfs]
+            
             # 섹터당 1종목
             sector_picked = set()
+            final_scores = pd.Series(dtype=float)
             
-            for symbol in current_scores.sort_values(ascending=False).index:
+            for symbol in filtered_scores.sort_values(ascending=False).index:
                 if symbol not in sector_map:
                     continue
                 
@@ -564,43 +596,13 @@ def run_backtest_core(df, sector_df, sector_map, version='A'):
                 if stock_sector in sector_picked:
                     continue
                 
-                filtered_scores[symbol] = current_scores[symbol]
+                final_scores[symbol] = filtered_scores[symbol]
                 sector_picked.add(stock_sector)
                 
-                if len(filtered_scores) >= TOP_N:
+                if len(final_scores) >= TOP_N:
                     break
-        
-        elif version == 'D':
-            # 1위 섹터에서 Top 3
-            for symbol in current_scores.sort_values(ascending=False).index:
-                if symbol not in sector_map:
-                    continue
-                
-                stock_sector = sector_map[symbol]
-                
-                if stock_sector not in valid_sectors:
-                    continue
-                
-                filtered_scores[symbol] = current_scores[symbol]
-                
-                if len(filtered_scores) >= TOP_N:
-                    break
-        
-        else:
-            # 버전 A, B: valid_sectors에 속한 종목만
-            for symbol in current_scores.sort_values(ascending=False).index:
-                if symbol not in sector_map:
-                    continue
-                
-                stock_sector = sector_map[symbol]
-                
-                if stock_sector not in valid_sectors:
-                    continue
-                
-                filtered_scores[symbol] = current_scores[symbol]
-                
-                if len(filtered_scores) >= TOP_N:
-                    break
+            
+            filtered_scores = final_scores
         
         if filtered_scores.empty:
             continue
@@ -621,51 +623,52 @@ def run_backtest_core(df, sector_df, sector_map, version='A'):
 
 
 # ============================================
-# 10. 버전별 백테스트
+# 7. 버전별 백테스트
 # ============================================
 
-def run_backtest_A(df, sector_df, sector_map):
-    """버전 A: 섹터 필터만"""
-    print("[버전 A] 섹터 필터 (SPY 대비)")
-    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='A')
+def run_backtest_A(df):
+    """버전 A: SPY 상관관계 > 0.5"""
+    print("[버전 A] SPY 상관관계 > 0.5 (단기 모멘텀)")
+    portfolio_df, trades_df = run_backtest_core(df, version='A')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
-def run_backtest_B(df, sector_df, sector_map):
-    """버전 B: 섹터 필터 + RSI"""
-    print("[버전 B] 섹터 필터 + RSI")
-    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='B')
+def run_backtest_B(df):
+    """버전 B: 중장기 모멘텀"""
+    print("[버전 B] 중장기 모멘텀 (1개월, 3개월, 6개월)")
+    portfolio_df, trades_df = run_backtest_core(df, version='B')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
-def run_backtest_C(df, sector_df, sector_map):
-    """버전 C: 섹터 필터 + RSI + 섹터당 1종목"""
-    print("[버전 C] 섹터 필터 + RSI + 섹터당 1종목")
-    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='C')
+def run_backtest_C(df):
+    """버전 C: 상관관계 + 중장기 모멘텀"""
+    print("[버전 C] 상관관계 + 중장기 모멘텀")
+    portfolio_df, trades_df = run_backtest_core(df, version='C')
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
 def run_backtest_D(df, sector_df, sector_map):
-    """버전 D: 1위 섹터에서 Top 3"""
-    print("[버전 D] 1위 섹터에서 Top 3")
-    portfolio_df, trades_df = run_backtest_core(df, sector_df, sector_map, version='D')
+    """버전 D: C + 섹터필터"""
+    print("[버전 D] 상관관계 + 중장기 모멘텀 + 섹터필터")
+    portfolio_df, trades_df = run_backtest_core(df, version='D', sector_df=sector_df, sector_map=sector_map)
     metrics = calculate_metrics(portfolio_df, trades_df, df)
     return {'portfolio': portfolio_df, 'trades': trades_df, 'metrics': metrics}
 
 
 # ============================================
-# 11. 전체 비교 실행
+# 8. 전체 비교 실행
 # ============================================
 
 def run_all_versions(df):
     """4가지 버전 비교"""
     print("\n" + "=" * 80)
-    print("🧪 섹터 필터 백테스트 비교")
-    print(f"   섹터 모멘텀 기간: {SECTOR_MOMENTUM_PERIOD}일")
-    print(f"   섹터 RSI 상한: {SECTOR_RSI_UPPER}")
+    print("🧪 상관관계 + 중장기 모멘텀 백테스트 비교")
+    print(f"   상관관계 기간: {CORRELATION_PERIOD}일")
+    print(f"   상관관계 기준: > {CORRELATION_THRESHOLD}")
+    print(f"   중장기 모멘텀: 1개월, 3개월, 6개월")
     print("=" * 80 + "\n")
     
     # 섹터 정보 준비
@@ -673,16 +676,16 @@ def run_all_versions(df):
     sp500 = get_sp500_list()
     sector_map = dict(zip(sp500['symbol'], sp500['sector']))
     
-    # 섹터 ETF 데이터 다운로드
+    # 섹터 ETF 데이터
     start_date = df['date'].min()
     end_date = df['date'].max()
     sector_df = get_sector_etf_data(start_date, end_date)
     
     results = {}
     
-    results['A'] = run_backtest_A(df, sector_df, sector_map)
-    results['B'] = run_backtest_B(df, sector_df, sector_map)
-    results['C'] = run_backtest_C(df, sector_df, sector_map)
+    results['A'] = run_backtest_A(df)
+    results['B'] = run_backtest_B(df)
+    results['C'] = run_backtest_C(df)
     results['D'] = run_backtest_D(df, sector_df, sector_map)
     
     # 비교 테이블
@@ -690,25 +693,25 @@ def run_all_versions(df):
     print("📊 결과 비교")
     print("=" * 90)
     
-    print(f"\n{'버전':<6} {'설명':<35} {'총수익률':>12} {'CAGR':>10} {'MDD':>10} {'샤프':>8}")
+    print(f"\n{'버전':<6} {'설명':<40} {'총수익률':>12} {'CAGR':>10} {'MDD':>10} {'샤프':>8}")
     print("-" * 90)
     
     descriptions = {
-        'A': '섹터 필터 (SPY 대비)',
-        'B': '섹터 필터 + RSI',
-        'C': '섹터 필터 + RSI + 섹터당 1종목',
-        'D': '1위 섹터에서 Top 3'
+        'A': 'SPY 상관관계 > 0.5 (단기 모멘텀)',
+        'B': '중장기 모멘텀 (1개월, 3개월, 6개월)',
+        'C': '상관관계 + 중장기 모멘텀',
+        'D': 'C + 섹터필터 + RSI + 섹터당 1종목'
     }
     
     for ver in ['A', 'B', 'C', 'D']:
         m = results[ver]['metrics']
         desc = descriptions[ver]
-        print(f"{ver:<6} {desc:<35} {m['total_return']*100:>11.2f}% {m['cagr']*100:>9.2f}% {m['mdd']*100:>9.2f}% {m['sharpe_ratio']:>8.2f}")
+        print(f"{ver:<6} {desc:<40} {m['total_return']*100:>11.2f}% {m['cagr']*100:>9.2f}% {m['mdd']*100:>9.2f}% {m['sharpe_ratio']:>8.2f}")
     
     print("-" * 90)
     
     spy_ret = results['A']['metrics']['spy_return']
-    print(f"{'SPY':<6} {'벤치마크':<35} {spy_ret*100:>11.2f}%")
+    print(f"{'SPY':<6} {'벤치마크':<40} {spy_ret*100:>11.2f}%")
     
     print("=" * 90)
     
@@ -728,7 +731,7 @@ def run_all_versions(df):
 
 
 # ============================================
-# 12. 성과 지표 계산
+# 9. 성과 지표 계산
 # ============================================
 
 def calculate_metrics(portfolio_df, trades_df, df):
@@ -796,7 +799,7 @@ def calculate_metrics(portfolio_df, trades_df, df):
 
 
 # ============================================
-# 13. 결과 출력
+# 10. 결과 출력
 # ============================================
 
 def print_metrics(metrics, trades_df=None):
@@ -835,7 +838,7 @@ def print_metrics(metrics, trades_df=None):
 
 
 # ============================================
-# 14. 그래프
+# 11. 그래프
 # ============================================
 
 def plot_comparison(results, df):
@@ -899,7 +902,7 @@ def plot_comparison(results, df):
     plt.show()
     
     print("\n📋 버전 설명:")
-    print("  A: 섹터 필터만 (SPY 대비 수익률 > 0인 섹터)")
-    print("  B: 섹터 필터 + RSI (RSI < 70)")
-    print("  C: 섹터 필터 + RSI + 섹터당 1종목")
-    print("  D: SPY 대비 1위 섹터에서 Top 3 종목")
+    print("  A: SPY 상관관계 > 0.5 (단기 모멘텀 유지)")
+    print("  B: 중장기 모멘텀 (1개월, 3개월, 6개월)")
+    print("  C: 상관관계 + 중장기 모멘텀")
+    print("  D: C + 섹터필터 + RSI + 섹터당 1종목")
