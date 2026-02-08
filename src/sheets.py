@@ -342,10 +342,9 @@ class SheetsManager:
 # ============================================
 
     if __name__ == "__main__":
-    print("SheetsManager Test")
-    print('=' * 60)
-    
-    
-    sheets = SheetsManager()
-    print(f"URL: {sheets.get_url()}")
-    sheets.get_summary()
+        print("SheetsManager Test")
+        print('=' * 60)
+        
+        sheets = SheetsManager()
+        print(f"URL: {sheets.get_url()}")
+        sheets.get_summary()
