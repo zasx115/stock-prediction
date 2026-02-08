@@ -1,14 +1,14 @@
 # ============================================
 # src/paper_trading.py
-# Paper Trading System (with Google Sheets)
+# Paper Trading System
+# - Google Sheets 연동
+# - Telegram 알림
 # ============================================
 
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-import requests
-from io import StringIO
 
 from src.strategy import (
     CustomStrategy,
@@ -17,6 +17,14 @@ from src.strategy import (
     create_trade_mapping
 )
 from src.sheets import SheetsManager
+from src.telegram import (
+    send_signal,
+    send_trades,
+    send_portfolio,
+    send_stop_loss,
+    send_daily_summary,
+    send_error
+)
 
 # ============================================
 # Settings
@@ -30,51 +38,63 @@ STOP_LOSS = -0.07
 LOOKBACK_DAYS = 200
 
 # ============================================
+# S&P 500 List (Backup)
+# ============================================
+
+SP500_BACKUP = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "UNH", "JNJ",
+    "JPM", "V", "PG", "XOM", "MA", "HD", "CVX", "MRK", "ABBV", "LLY",
+    "PEP", "KO", "COST", "AVGO", "WMT", "MCD", "CSCO", "ACN", "TMO", "ABT",
+    "DHR", "NEE", "VZ", "ADBE", "CRM", "NKE", "PM", "TXN", "CMCSA", "ORCL",
+    "AMD", "INTC", "QCOM", "HON", "UPS", "LOW", "IBM", "CAT", "BA", "GE",
+    "RTX", "SPGI", "AMGN", "MS", "GS", "BLK", "AXP", "ISRG", "MDLZ", "GILD",
+    "ADI", "BKNG", "SYK", "VRTX", "MMC", "LRCX", "REGN", "PLD", "SCHW", "CB",
+    "CI", "ZTS", "NOW", "MO", "TMUS", "SO", "DUK", "BDX", "AON", "APD",
+    "CME", "CL", "EQIX", "ITW", "NOC", "SHW", "PNC", "USB", "ICE", "MCO",
+    "NSC", "EMR", "KLAC", "TGT", "SNPS", "CDNS", "WM", "FDX", "ADP", "MPC"
+]
+
+# ============================================
 # Data Download
 # ============================================
 
 def get_sp500_list():
-    """
-    위키피디아에서 S&P 500 종목 리스트를 가져옵니다.
-    사용자가 제공한 정상 동작 코드를 기반으로 작성되었습니다.
-    """
     try:
-        # S&P 500 리스트 위키피디아 주소
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        
-        # 브라우저 접근처럼 보이게 하기 위한 헤더 설정
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        
-        # 1. requests를 사용하여 HTML 소스 가져오기
-        response = requests.get(url, headers=headers)
-        response.raise_for_status() # 403 등 에러 발생 시 예외 처리로 이동
-        
-        # 2. StringIO를 사용하여 pandas에 전달 (직접 URL 호출 방지)
-        table = pd.read_html(StringIO(response.text))
-        
-        # 3. 데이터프레임 가공
-        sp500 = table[0][['Symbol', 'Security', 'GICS Sector']].copy()
-        sp500.columns = ['symbol', 'name', 'sector']
-        
-        # 티커 심볼 내의 마침표(.)를 하이픈(-)으로 변경 (yfinance 호환용)
-        sp500['symbol'] = sp500['symbol'].replace('\.', '-', regex=True)
-        
-        print(f"✅ S&P 500 {len(sp500)}개 종목 로드 완료!")
-        return sp500
-        
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        df = tables[0]
+        df = df[["Symbol", "Security", "GICS Sector"]].copy()
+        df.columns = ["symbol", "company", "sector"]
+        df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
+        print(f"Loaded {len(df)} symbols from Wikipedia")
+        return df
     except Exception as e:
-        # 에러 발생 시 상세 내용 출력 후 빈 데이터프레임 반환
-        print(f"❌ S&P 500 리스트 로드 실패: {e}")
-        return pd.DataFrame()
-    
+        print(f"Wikipedia failed: {e}")
+        print(f"Using backup list ({len(SP500_BACKUP)} symbols)")
+        return pd.DataFrame({
+            "symbol": SP500_BACKUP,
+            "company": "",
+            "sector": ""
+        })
+
 
 def download_recent_data(symbols, days=LOOKBACK_DAYS):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     print(f"Downloading {len(symbols)} symbols...")
-    data = yf.download(symbols, start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True, threads=True, progress=False)
+    
+    data = yf.download(
+        symbols,
+        start=start_date.strftime("%Y-%m-%d"),
+        end=end_date.strftime("%Y-%m-%d"),
+        auto_adjust=True,
+        threads=True,
+        progress=False
+    )
+    
     if data.empty:
         return pd.DataFrame()
+    
     result = []
     if len(symbols) == 1:
         df = data.copy()
@@ -87,12 +107,21 @@ def download_recent_data(symbols, days=LOOKBACK_DAYS):
             try:
                 if symbol not in data["Close"].columns:
                     continue
-                df = pd.DataFrame({"date": data.index, "open": data["Open"][symbol].values, "high": data["High"][symbol].values, "low": data["Low"][symbol].values, "close": data["Close"][symbol].values, "volume": data["Volume"][symbol].values, "symbol": symbol})
+                df = pd.DataFrame({
+                    "date": data.index,
+                    "open": data["Open"][symbol].values,
+                    "high": data["High"][symbol].values,
+                    "low": data["Low"][symbol].values,
+                    "close": data["Close"][symbol].values,
+                    "volume": data["Volume"][symbol].values,
+                    "symbol": symbol
+                })
                 df = df.dropna(subset=["close"])
                 if not df.empty:
                     result.append(df)
             except:
                 continue
+    
     if result:
         final_df = pd.concat(result, ignore_index=True)
         final_df["date"] = pd.to_datetime(final_df["date"])
@@ -138,7 +167,6 @@ def get_today_signal(strategy=None):
     print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
     
-    # Download data
     sp500 = get_sp500_list()
     symbols = sp500["symbol"].tolist()
     if "SPY" not in symbols:
@@ -148,7 +176,6 @@ def get_today_signal(strategy=None):
     if df.empty:
         return {"signal": "ERROR", "message": "Download failed"}
     
-    # Prepare data
     price_df = prepare_price_data(df)
     tuesday_df = filter_tuesday(price_df)
     if "SPY" in tuesday_df.columns:
@@ -156,13 +183,11 @@ def get_today_signal(strategy=None):
     if tuesday_df.empty:
         return {"signal": "ERROR", "message": "No Tuesday data"}
     
-    # Calculate scores
     score_df, correlation_df, ret_1m = strategy.prepare(price_df, tuesday_df)
     score_dates = score_df.dropna(how="all").index.tolist()
     if not score_dates:
         return {"signal": "ERROR", "message": "Cannot calculate scores"}
     
-    # Find latest Tuesday
     target_ts = pd.Timestamp(datetime.now())
     valid_dates = [d for d in score_dates if d <= target_ts]
     if not valid_dates:
@@ -171,15 +196,11 @@ def get_today_signal(strategy=None):
     last_tuesday = valid_dates[-1]
     print(f"\nAnalysis date: {last_tuesday.strftime('%Y-%m-%d')} (Tuesday)")
     
-    # Market momentum
     market_momentum = 0
     if last_tuesday in ret_1m.index:
         market_momentum = ret_1m.loc[last_tuesday].mean()
     
-    # Select stocks
     result = strategy.select_stocks(score_df, correlation_df, last_tuesday, ret_1m)
-    
-    # SPY price
     spy_price = get_spy_price()
     
     if result is None:
@@ -197,11 +218,8 @@ def get_today_signal(strategy=None):
             "market_trend": "DOWN"
         }
     
-    # Get current prices
     picks = result["picks"]
     prices = get_current_prices(picks)
-    
-    # Get sectors
     sector_map = dict(zip(sp500["symbol"], sp500["sector"]))
     
     print(f"\nBUY Signal: {len(picks)} stocks")
@@ -315,11 +333,9 @@ def execute_signal(signal, sheets):
     print("Executing Trades")
     print("=" * 60)
     
-    # Current portfolio value
     port_value = get_portfolio_value(portfolio, signal.get("prices", {}))
     total_value = port_value["total"]
     
-    # Target allocations
     target_allocations = {}
     for i, symbol in enumerate(signal["picks"]):
         if i < len(signal["allocations"]):
@@ -358,7 +374,7 @@ def execute_signal(signal, sheets):
             print(f"  SELL: {symbol} | {info['shares']} shares | ${sell_price:.2f} | Return: {return_pct:+.2f}%")
             del portfolio["holdings"][symbol]
     
-    # BUY new
+    # BUY
     for symbol in to_buy:
         if symbol not in target_allocations:
             continue
@@ -404,7 +420,7 @@ def execute_signal(signal, sheets):
             else:
                 print(f"  SKIP: {symbol} - Insufficient cash")
     
-    # ADJUST existing
+    # ADJUST
     for symbol in to_keep:
         if symbol not in portfolio["holdings"] or symbol not in target_allocations:
             continue
@@ -421,9 +437,9 @@ def execute_signal(signal, sheets):
         diff_shares = int(abs(diff_value) / current_price)
         score_idx = signal["picks"].index(symbol) if symbol in signal["picks"] else -1
         score = signal["scores"][score_idx] if 0 <= score_idx < len(signal["scores"]) else 0
+        
         if abs(diff_value) / total_value > 0.05 and diff_shares > 0:
             if diff_value > 0:
-                # ADD
                 buy_price = current_price * (1 + SLIPPAGE)
                 buy_amount = diff_shares * buy_price
                 commission = buy_amount * BUY_COMMISSION
@@ -452,7 +468,6 @@ def execute_signal(signal, sheets):
                     trades.append(trade)
                     print(f"  ADD: {symbol} | +{diff_shares} shares | ${buy_price:.2f}")
             else:
-                # REDUCE
                 sell_price = current_price * (1 - SLIPPAGE)
                 sell_amount = diff_shares * sell_price
                 commission = sell_amount * SELL_COMMISSION
@@ -541,6 +556,9 @@ def check_stop_loss(sheets):
         sheets.save_portfolio(portfolio)
         sheets.save_trades(trades)
         print(f"\n{len(trades)} stop loss executed")
+        
+        # Telegram
+        send_stop_loss(trades)
     else:
         print("\nNo stop loss needed")
     
@@ -556,7 +574,6 @@ def record_daily_value(sheets):
     port_value = get_portfolio_value(portfolio)
     spy_price = get_spy_price()
     
-    # Load previous daily value for return calculation
     daily_df = sheets.load_daily_values()
     prev_value = INITIAL_CAPITAL
     prev_spy = spy_price
@@ -585,7 +602,7 @@ def record_daily_value(sheets):
     sheets.save_daily_value(daily_data)
     print(f"Daily value recorded: ${port_value['total']:,.2f} ({daily_return:+.2f}%)")
     
-    return daily_data
+    return daily_data, port_value
 
 
 # ============================================
@@ -598,10 +615,8 @@ def update_performance(sheets):
     trades_df = sheets.load_trades()
     daily_df = sheets.load_daily_values()
     
-    # Calculate metrics
     total_return = (port_value["total"] - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
     
-    # Days
     start_date = portfolio.get("created_at", "")[:10]
     if start_date:
         try:
@@ -611,11 +626,9 @@ def update_performance(sheets):
     else:
         days = 0
     
-    # CAGR
     years = days / 365 if days > 0 else 0
     cagr = ((port_value["total"] / INITIAL_CAPITAL) ** (1/years) - 1) * 100 if years > 0 else 0
     
-    # SPY return
     spy_return = 0
     if len(daily_df) > 1:
         try:
@@ -625,7 +638,6 @@ def update_performance(sheets):
         except:
             pass
     
-    # MDD
     mdd = 0
     if len(daily_df) > 0:
         try:
@@ -636,7 +648,6 @@ def update_performance(sheets):
         except:
             pass
     
-    # Win rate
     win_rate = 0
     total_trades = len(trades_df)
     if total_trades > 0:
@@ -647,7 +658,6 @@ def update_performance(sheets):
         except:
             pass
     
-    # Sharpe (simplified)
     sharpe = 0
     if len(daily_df) > 1:
         try:
@@ -692,7 +702,6 @@ def update_performance(sheets):
 # ============================================
 
 def run_daily(sheets=None):
-    """Daily routine: check stop loss, record value"""
     if sheets is None:
         sheets = SheetsManager()
     
@@ -700,18 +709,25 @@ def run_daily(sheets=None):
     print(f"Daily Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
     
-    # Check stop loss
-    check_stop_loss(sheets)
-    
-    # Record daily value
-    record_daily_value(sheets)
-    
-    # Update performance
-    update_performance(sheets)
+    try:
+        # Stop loss check
+        stop_trades = check_stop_loss(sheets)
+        
+        # Record daily value
+        daily_data, port_value = record_daily_value(sheets)
+        
+        # Update performance
+        update_performance(sheets)
+        
+        # Telegram
+        send_daily_summary(daily_data, port_value)
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        send_error(str(e))
 
 
 def run_weekly(sheets=None):
-    """Weekly routine: generate signal, execute trades"""
     if sheets is None:
         sheets = SheetsManager()
     
@@ -719,25 +735,38 @@ def run_weekly(sheets=None):
     print(f"Weekly Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
     
-    # Generate signal
-    signal = get_today_signal()
-    
-    # Save signal
-    sheets.save_signal(signal)
-    
-    # Execute if BUY
-    if signal["signal"] == "BUY":
-        execute_signal(signal, sheets)
-    
-    # Record daily value
-    record_daily_value(sheets)
-    
-    # Update performance
-    update_performance(sheets)
+    try:
+        # Generate signal
+        signal = get_today_signal()
+        sheets.save_signal(signal)
+        
+        # Telegram signal
+        send_signal(signal)
+        
+        # Execute trades
+        if signal["signal"] == "BUY":
+            trades = execute_signal(signal, sheets)
+            send_trades(trades)
+        
+        # Stop loss check
+        stop_trades = check_stop_loss(sheets)
+        
+        # Record daily value
+        daily_data, port_value = record_daily_value(sheets)
+        
+        # Update performance
+        update_performance(sheets)
+        
+        # Telegram portfolio
+        send_portfolio(port_value)
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        send_error(str(e))
 
 
 # ============================================
-# Test
+# CLI
 # ============================================
 
 if __name__ == "__main__":
@@ -754,13 +783,18 @@ if __name__ == "__main__":
     if cmd == "signal":
         signal = get_today_signal()
         sheets.save_signal(signal)
+        send_signal(signal)
     elif cmd == "portfolio":
         print_portfolio(sheets)
+        port_value = get_portfolio_value(sheets.load_portfolio())
+        send_portfolio(port_value)
     elif cmd == "execute":
         signal = get_today_signal()
         sheets.save_signal(signal)
+        send_signal(signal)
         if signal["signal"] == "BUY":
-            execute_signal(signal, sheets)
+            trades = execute_signal(signal, sheets)
+            send_trades(trades)
     elif cmd == "stoploss":
         check_stop_loss(sheets)
     elif cmd == "daily":
