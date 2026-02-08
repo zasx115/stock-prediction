@@ -335,7 +335,6 @@ def get_summary(self):
     print(f"Signals: {len(signals_df)} records")
     
     print("=" * 60)
-```
 
 # ============================================
 
