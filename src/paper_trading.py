@@ -34,31 +34,39 @@ LOOKBACK_DAYS = 200
 # ============================================
 
 def get_sp500_list():
-    #url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    #headers = {'User-Agent': 'Mozilla/5.0'}
-    #response = requests.get(url, headers=headers)
-    #tables = pd.read_html(StringIO(response.text))
-    
+"""
+    위키피디아에서 S&P 500 리스트를 안전하게 가져옵니다.
+    """
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    # 1. 조금 더 구체적인 User-Agent 설정 (브라우저인 것처럼 위장)
+    
+    # 브라우저처럼 보이게 만드는 헤더 설정
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    # 2. requests를 통해 먼저 HTML 소스를 가져옴
-    response = requests.get(url, headers=headers, timeout=10)
-    # HTTP 상태 코드가 200이 아닐 경우 에러 발생시킴
-    response.raise_for_status() 
-        
-    # 3. StringIO를 사용하여 pandas가 내부적으로 재요청하지 않게 함
-    # 이전에 발생했던 오타 수정 (table -> tables[0])
-    tables = pd.read_html(StringIO(response.text))
-    df = tables[0]
     
-    df = tables[0]
-    df = df[["Symbol", "Security", "GICS Sector"]].copy()
-    df.columns = ["symbol", "company", "sector"]
-    df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
-    return df
+    try:
+        # 1. requests를 사용하여 HTML 소스 코드를 먼저 가져옵니다.
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # 200 OK가 아니면 에러를 발생시킵니다.
+        
+        # 2. StringIO를 사용하여 pandas가 URL을 직접 호출하지 못하게 방어합니다.
+        # 이렇게 하면 pandas는 이미 다운로드된 텍스트만 읽게 됩니다.
+        tables = pd.read_html(StringIO(response.text))
+        df = tables[0]
+        
+        # 3. 데이터 정리
+        df = df[["Symbol", "Security", "GICS Sector"]].copy()
+        df.columns = ["symbol", "company", "sector"]
+        
+        # 티커의 점(.)을 하이픈(-)으로 변경 (yfinance 호환성)
+        df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
+        
+        return df
+
+    except Exception as e:
+        print(f"S&P 500 리스트 로딩 실패: {e}")
+        # 실패 시 빈 데이터프레임 혹은 예외 처리를 수행합니다.
+        return pd.DataFrame()
     
 
 def download_recent_data(symbols, days=LOOKBACK_DAYS):
