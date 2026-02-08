@@ -1,29 +1,23 @@
 # ============================================
-
 # src/paper_trading.py
-
-# Paper Trading System
-
+# Paper Trading System (with Google Sheets)
 # ============================================
 
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-import os
-import json
 
 from src.strategy import (
-CustomStrategy,
-prepare_price_data,
-filter_tuesday,
-create_trade_mapping
+    CustomStrategy,
+    prepare_price_data,
+    filter_tuesday,
+    create_trade_mapping
 )
+from src.sheets import SheetsManager
 
 # ============================================
-
 # Settings
-
 # ============================================
 
 INITIAL_CAPITAL = 2000
@@ -33,370 +27,292 @@ SLIPPAGE = 0.001
 STOP_LOSS = -0.07
 LOOKBACK_DAYS = 200
 
-DATA_DIR = “paper_trading_data”
-PORTFOLIO_FILE = DATA_DIR + “/portfolio.json”
-TRADES_FILE = DATA_DIR + “/trades.csv”
-SIGNALS_FILE = DATA_DIR + “/signals.csv”
-
 # ============================================
-
 # Data Download
-
 # ============================================
 
 def get_sp500_list():
-“”“Get S&P 500 stock list from Wikipedia”””
-url = “https://en.wikipedia.org/wiki/List_of_S%26P_500_companies”
-tables = pd.read_html(url)
-df = tables[0]
-df = df[[“Symbol”, “Security”, “GICS Sector”]].copy()
-df.columns = [“symbol”, “company”, “sector”]
-df[“symbol”] = df[“symbol”].str.replace(”.”, “-”, regex=False)
-return df
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    tables = pd.read_html(url)
+    df = tables[0]
+    df = df[["Symbol", "Security", "GICS Sector"]].copy()
+    df.columns = ["symbol", "company", "sector"]
+    df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
+    return df
+
 
 def download_recent_data(symbols, days=LOOKBACK_DAYS):
-“”“Download recent N days of data”””
-end_date = datetime.now()
-start_date = end_date - timedelta(days=days)
-
-```
-print(f"Downloading data...")
-print(f"  Symbols: {len(symbols)}")
-print(f"  Period: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
-
-data = yf.download(
-    symbols,
-    start=start_date.strftime("%Y-%m-%d"),
-    end=end_date.strftime("%Y-%m-%d"),
-    auto_adjust=True,
-    threads=True,
-    progress=False
-)
-
-if data.empty:
-    print("Download failed")
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    print(f"Downloading {len(symbols)} symbols...")
+    data = yf.download(symbols, start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"), auto_adjust=True, threads=True, progress=False)
+    if data.empty:
+        return pd.DataFrame()
+    result = []
+    if len(symbols) == 1:
+        df = data.copy()
+        df["symbol"] = symbols[0]
+        df = df.reset_index()
+        df.columns = ["date", "close", "high", "low", "open", "volume", "symbol"]
+        result.append(df)
+    else:
+        for symbol in symbols:
+            try:
+                if symbol not in data["Close"].columns:
+                    continue
+                df = pd.DataFrame({"date": data.index, "open": data["Open"][symbol].values, "high": data["High"][symbol].values, "low": data["Low"][symbol].values, "close": data["Close"][symbol].values, "volume": data["Volume"][symbol].values, "symbol": symbol})
+                df = df.dropna(subset=["close"])
+                if not df.empty:
+                    result.append(df)
+            except:
+                continue
+    if result:
+        final_df = pd.concat(result, ignore_index=True)
+        final_df["date"] = pd.to_datetime(final_df["date"])
+        print(f"Downloaded {final_df['symbol'].nunique()} symbols")
+        return final_df
     return pd.DataFrame()
 
-result = []
 
-if len(symbols) == 1:
-    df = data.copy()
-    df["symbol"] = symbols[0]
-    df = df.reset_index()
-    df.columns = ["date", "close", "high", "low", "open", "volume", "symbol"]
-    result.append(df)
-else:
+def get_current_prices(symbols):
+    prices = {}
     for symbol in symbols:
         try:
-            if symbol not in data["Close"].columns:
-                continue
-            
-            df = pd.DataFrame({
-                "date": data.index,
-                "open": data["Open"][symbol].values,
-                "high": data["High"][symbol].values,
-                "low": data["Low"][symbol].values,
-                "close": data["Close"][symbol].values,
-                "volume": data["Volume"][symbol].values,
-                "symbol": symbol
-            })
-            
-            df = df.dropna(subset=["close"])
-            if not df.empty:
-                result.append(df)
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                prices[symbol] = round(hist["Close"].iloc[-1], 2)
         except:
-            continue
+            pass
+    return prices
 
-if result:
-    final_df = pd.concat(result, ignore_index=True)
-    final_df["date"] = pd.to_datetime(final_df["date"])
-    print(f"Download complete! ({final_df['symbol'].nunique()} symbols)")
-    return final_df
 
-return pd.DataFrame()
-```
+def get_spy_price():
+    try:
+        ticker = yf.Ticker("SPY")
+        hist = ticker.history(period="1d")
+        if not hist.empty:
+            return round(hist["Close"].iloc[-1], 2)
+    except:
+        pass
+    return 0
+
 
 # ============================================
-
 # Signal Generation
-
 # ============================================
 
-def get_today_signal(strategy=None, target_date=None):
-“”“Generate buy signal for today”””
-
-```
-if strategy is None:
-    strategy = CustomStrategy()
-
-if target_date is None:
-    target_date = datetime.now()
-
-print("=" * 60)
-print(f"Generating Signal")
-print(f"   Date: {target_date.strftime('%Y-%m-%d %H:%M')}")
-print("=" * 60)
-
-# Download data
-sp500 = get_sp500_list()
-symbols = sp500["symbol"].tolist()
-if "SPY" not in symbols:
-    symbols.append("SPY")
-
-df = download_recent_data(symbols)
-
-if df.empty:
-    return {"signal": "ERROR", "message": "Download failed"}
-
-# Prepare strategy data
-price_df = prepare_price_data(df)
-tuesday_df = filter_tuesday(price_df)
-
-if "SPY" in tuesday_df.columns:
-    tuesday_df = tuesday_df.dropna(subset=["SPY"])
-
-if tuesday_df.empty:
-    return {"signal": "ERROR", "message": "No Tuesday data"}
-
-score_df, correlation_df, ret_1m = strategy.prepare(price_df, tuesday_df)
-
-# Find latest Tuesday
-score_dates = score_df.dropna(how="all").index.tolist()
-
-if not score_dates:
-    return {"signal": "ERROR", "message": "Cannot calculate scores"}
-
-target_ts = pd.Timestamp(target_date)
-valid_dates = [d for d in score_dates if d <= target_ts]
-
-if not valid_dates:
-    return {"signal": "ERROR", "message": "No valid Tuesday"}
-
-last_tuesday = valid_dates[-1]
-
-print(f"\nAnalysis date: {last_tuesday.strftime('%Y-%m-%d')} (Tuesday)")
-
-# Select stocks
-result = strategy.select_stocks(score_df, correlation_df, last_tuesday, ret_1m)
-
-if result is None:
-    print("\nMarket downtrend - No buy signal")
+def get_today_signal(strategy=None):
+    if strategy is None:
+        strategy = CustomStrategy()
+    
+    print("=" * 60)
+    print(f"Signal Generation")
+    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+    
+    # Download data
+    sp500 = get_sp500_list()
+    symbols = sp500["symbol"].tolist()
+    if "SPY" not in symbols:
+        symbols.append("SPY")
+    
+    df = download_recent_data(symbols)
+    if df.empty:
+        return {"signal": "ERROR", "message": "Download failed"}
+    
+    # Prepare data
+    price_df = prepare_price_data(df)
+    tuesday_df = filter_tuesday(price_df)
+    if "SPY" in tuesday_df.columns:
+        tuesday_df = tuesday_df.dropna(subset=["SPY"])
+    if tuesday_df.empty:
+        return {"signal": "ERROR", "message": "No Tuesday data"}
+    
+    # Calculate scores
+    score_df, correlation_df, ret_1m = strategy.prepare(price_df, tuesday_df)
+    score_dates = score_df.dropna(how="all").index.tolist()
+    if not score_dates:
+        return {"signal": "ERROR", "message": "Cannot calculate scores"}
+    
+    # Find latest Tuesday
+    target_ts = pd.Timestamp(datetime.now())
+    valid_dates = [d for d in score_dates if d <= target_ts]
+    if not valid_dates:
+        return {"signal": "ERROR", "message": "No valid Tuesday"}
+    
+    last_tuesday = valid_dates[-1]
+    print(f"\nAnalysis date: {last_tuesday.strftime('%Y-%m-%d')} (Tuesday)")
+    
+    # Market momentum
+    market_momentum = 0
+    if last_tuesday in ret_1m.index:
+        market_momentum = ret_1m.loc[last_tuesday].mean()
+    
+    # Select stocks
+    result = strategy.select_stocks(score_df, correlation_df, last_tuesday, ret_1m)
+    
+    # SPY price
+    spy_price = get_spy_price()
+    
+    if result is None:
+        print("\nMarket downtrend - HOLD")
+        return {
+            "date": last_tuesday,
+            "signal": "HOLD",
+            "message": "Market momentum <= 0",
+            "picks": [],
+            "scores": [],
+            "allocations": [],
+            "prices": {},
+            "market_momentum": market_momentum,
+            "spy_price": spy_price,
+            "market_trend": "DOWN"
+        }
+    
+    # Get current prices
+    picks = result["picks"]
+    prices = get_current_prices(picks)
+    
+    # Get sectors
+    sector_map = dict(zip(sp500["symbol"], sp500["sector"]))
+    
+    print(f"\nBUY Signal: {len(picks)} stocks")
+    print("-" * 50)
+    for i, (symbol, score, alloc) in enumerate(zip(picks, result["scores"], result["allocations"])):
+        price = prices.get(symbol, "N/A")
+        sector = sector_map.get(symbol, "")
+        price_str = f"${price:.2f}" if isinstance(price, float) else price
+        print(f"  {i+1}. {symbol:5} | {sector[:15]:15} | Score: {score:.4f} | {alloc*100:.0f}% | {price_str}")
+    print("-" * 50)
+    print(f"SPY: ${spy_price} | Market Momentum: {market_momentum:.4f}")
+    
     return {
         "date": last_tuesday,
-        "signal": "HOLD",
-        "message": "Market momentum <= 0",
-        "picks": [],
-        "scores": [],
-        "allocations": [],
-        "prices": {}
+        "signal": "BUY",
+        "picks": picks,
+        "scores": result["scores"],
+        "allocations": result["allocations"],
+        "prices": prices,
+        "sectors": {s: sector_map.get(s, "") for s in picks},
+        "market_momentum": market_momentum,
+        "spy_price": spy_price,
+        "market_trend": "UP"
     }
 
-# Get current prices
-picks = result["picks"]
-prices = {}
-
-for symbol in picks:
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        if not hist.empty:
-            prices[symbol] = round(hist["Close"].iloc[-1], 2)
-    except:
-        prices[symbol] = None
-
-# Print results
-print(f"\nBuy Signal: {len(picks)} stocks")
-print("-" * 50)
-
-for i, (symbol, score, alloc) in enumerate(zip(picks, result["scores"], result["allocations"])):
-    price = prices.get(symbol, "N/A")
-    price_str = f"${price:.2f}" if isinstance(price, float) else price
-    print(f"  {i+1}. {symbol:5} | Score: {score:.4f} | Weight: {alloc*100:.0f}% | Price: {price_str}")
-
-print("-" * 50)
-
-return {
-    "date": last_tuesday,
-    "signal": "BUY",
-    "picks": picks,
-    "scores": result["scores"],
-    "allocations": result["allocations"],
-    "prices": prices
-}
-```
 
 # ============================================
-
 # Portfolio Management
-
 # ============================================
 
-def init_data_dir():
-“”“Create data directory”””
-if not os.path.exists(DATA_DIR):
-os.makedirs(DATA_DIR)
-print(f”Created directory: {DATA_DIR}”)
-
-def load_portfolio():
-“”“Load saved portfolio”””
-init_data_dir()
-
-```
-if os.path.exists(PORTFOLIO_FILE):
-    with open(PORTFOLIO_FILE, "r") as f:
-        return json.load(f)
-
-portfolio = {
-    "cash": INITIAL_CAPITAL,
-    "holdings": {},
-    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-}
-
-save_portfolio(portfolio)
-return portfolio
-```
-
-def save_portfolio(portfolio):
-“”“Save portfolio”””
-init_data_dir()
-
-```
-portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-with open(PORTFOLIO_FILE, "w") as f:
-    json.dump(portfolio, f, indent=2)
-```
-
-def get_portfolio_value(portfolio):
-“”“Calculate current portfolio value”””
-cash = portfolio[“cash”]
-holdings = portfolio[“holdings”]
-
-```
-stocks_value = 0
-holdings_detail = []
-
-for symbol, info in holdings.items():
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        
-        if not hist.empty:
-            current_price = hist["Close"].iloc[-1]
+def get_portfolio_value(portfolio, current_prices=None):
+    if current_prices is None:
+        symbols = list(portfolio.get("holdings", {}).keys())
+        if symbols:
+            current_prices = get_current_prices(symbols)
+        else:
+            current_prices = {}
+    
+    cash = portfolio.get("cash", 0)
+    stocks_value = 0
+    holdings_detail = []
+    
+    for symbol, info in portfolio.get("holdings", {}).items():
+        current_price = current_prices.get(symbol, 0)
+        if current_price > 0:
             value = info["shares"] * current_price
-            return_rate = (current_price - info["avg_price"]) / info["avg_price"]
-            
+            return_pct = (current_price - info["avg_price"]) / info["avg_price"] * 100
             stocks_value += value
             holdings_detail.append({
                 "symbol": symbol,
                 "shares": info["shares"],
                 "avg_price": info["avg_price"],
-                "current_price": round(current_price, 2),
+                "current_price": current_price,
                 "value": round(value, 2),
-                "return_rate": round(return_rate * 100, 2),
-                "profit": round(value - info["shares"] * info["avg_price"], 2)
+                "return_pct": round(return_pct, 2)
             })
-    except:
-        continue
-
-return {
-    "total": round(cash + stocks_value, 2),
-    "cash": round(cash, 2),
-    "stocks": round(stocks_value, 2),
-    "holdings_detail": holdings_detail
-}
-```
-
-def print_portfolio(portfolio=None):
-“”“Print portfolio status”””
-if portfolio is None:
-portfolio = load_portfolio()
-
-```
-value = get_portfolio_value(portfolio)
-
-print("=" * 60)
-print("Portfolio Status")
-print("=" * 60)
-
-print(f"\nAsset Summary")
-print(f"  Total: ${value['total']:,.2f}")
-print(f"  Cash: ${value['cash']:,.2f}")
-print(f"  Stocks: ${value['stocks']:,.2f}")
-
-total_return = (value["total"] - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
-print(f"\nTotal Return: {total_return:+.2f}%")
-
-if value["holdings_detail"]:
-    print(f"\nHoldings ({len(value['holdings_detail'])})")
-    print("-" * 60)
-    print(f"  {'Symbol':5} | {'Qty':>5} | {'AvgPrc':>8} | {'CurPrc':>8} | {'Return':>8} | {'Value':>10}")
-    print("-" * 60)
     
-    for h in value["holdings_detail"]:
-        print(f"  {h['symbol']:5} | {h['shares']:>5} | ${h['avg_price']:>7.2f} | ${h['current_price']:>7.2f} | {h['return_rate']:>+7.2f}% | ${h['value']:>9.2f}")
-    
-    print("-" * 60)
-else:
-    print("\nNo holdings")
+    return {
+        "total": round(cash + stocks_value, 2),
+        "cash": round(cash, 2),
+        "stocks": round(stocks_value, 2),
+        "holdings_detail": holdings_detail
+    }
 
-print(f"\nCreated: {portfolio['created_at']}")
-print(f"Updated: {portfolio['last_updated']}")
-print("=" * 60)
-```
+
+def print_portfolio(sheets):
+    portfolio = sheets.load_portfolio()
+    value = get_portfolio_value(portfolio)
+    
+    print("=" * 60)
+    print("Portfolio Status")
+    print("=" * 60)
+    print(f"\nTotal: ${value['total']:,.2f}")
+    print(f"Cash: ${value['cash']:,.2f}")
+    print(f"Stocks: ${value['stocks']:,.2f}")
+    
+    total_return = (value["total"] - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+    print(f"\nTotal Return: {total_return:+.2f}%")
+    
+    if value["holdings_detail"]:
+        print(f"\nHoldings ({len(value['holdings_detail'])})")
+        print("-" * 60)
+        for h in value["holdings_detail"]:
+            print(f"  {h['symbol']:5} | {h['shares']:>4} shares | Avg: ${h['avg_price']:>7.2f} | Now: ${h['current_price']:>7.2f} | {h['return_pct']:>+6.2f}%")
+        print("-" * 60)
+    else:
+        print("\nNo holdings")
+    print("=" * 60)
+
 
 # ============================================
-
-# Execute Trades
-
+# Trade Execution
 # ============================================
 
-def execute_signal(signal, portfolio=None):
-“”“Execute virtual trades based on signal”””
-if portfolio is None:
-portfolio = load_portfolio()
-
-```
-if signal["signal"] != "BUY":
-    print("No buy signal - nothing to execute")
-    return []
-
-trades = []
-new_picks = set(signal["picks"])
-current_holdings = set(portfolio["holdings"].keys())
-
-to_sell = current_holdings - new_picks
-to_buy = new_picks - current_holdings
-to_keep = current_holdings & new_picks
-
-print("\n" + "=" * 60)
-print("Executing Virtual Trades")
-print("=" * 60)
-
-port_value = get_portfolio_value(portfolio)
-total_value = port_value["total"]
-
-# Sell
-for symbol in to_sell:
-    if symbol not in portfolio["holdings"]:
-        continue
+def execute_signal(signal, sheets):
+    portfolio = sheets.load_portfolio()
     
-    info = portfolio["holdings"][symbol]
+    if signal["signal"] != "BUY":
+        print("No BUY signal - nothing to execute")
+        return []
     
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        
-        if not hist.empty:
-            current_price = hist["Close"].iloc[-1]
+    trades = []
+    new_picks = set(signal["picks"])
+    current_holdings = set(portfolio["holdings"].keys())
+    
+    to_sell = current_holdings - new_picks
+    to_buy = new_picks - current_holdings
+    to_keep = current_holdings & new_picks
+    
+    print("\n" + "=" * 60)
+    print("Executing Trades")
+    print("=" * 60)
+    
+    # Current portfolio value
+    port_value = get_portfolio_value(portfolio, signal.get("prices", {}))
+    total_value = port_value["total"]
+    
+    # Target allocations
+    target_allocations = {}
+    for i, symbol in enumerate(signal["picks"]):
+        if i < len(signal["allocations"]):
+            target_allocations[symbol] = signal["allocations"][i]
+    
+    # SELL
+    for symbol in to_sell:
+        if symbol not in portfolio["holdings"]:
+            continue
+        info = portfolio["holdings"][symbol]
+        current_price = signal.get("prices", {}).get(symbol)
+        if not current_price:
+            prices = get_current_prices([symbol])
+            current_price = prices.get(symbol, 0)
+        if current_price > 0:
             sell_price = current_price * (1 - SLIPPAGE)
             sell_amount = info["shares"] * sell_price
             commission = sell_amount * SELL_COMMISSION
-            
             portfolio["cash"] += sell_amount - commission
-            return_rate = (sell_price - info["avg_price"]) / info["avg_price"]
-            
+            return_pct = (sell_price - info["avg_price"]) / info["avg_price"] * 100
             trade = {
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "symbol": symbol,
@@ -405,53 +321,43 @@ for symbol in to_sell:
                 "price": round(sell_price, 2),
                 "amount": round(sell_amount, 2),
                 "commission": round(commission, 2),
-                "return_rate": round(return_rate * 100, 2)
+                "slippage": round(current_price * SLIPPAGE * info["shares"], 2),
+                "return_pct": round(return_pct, 2),
+                "sector": info.get("sector", ""),
+                "score": "",
+                "memo": "Position closed"
             }
             trades.append(trade)
-            
-            print(f"  SELL: {symbol} | {info['shares']} shares | ${sell_price:.2f} | Return: {return_rate*100:+.2f}%")
-            
+            print(f"  SELL: {symbol} | {info['shares']} shares | ${sell_price:.2f} | Return: {return_pct:+.2f}%")
             del portfolio["holdings"][symbol]
-    except Exception as e:
-        print(f"  SELL failed {symbol}: {e}")
-
-# Target allocations
-target_allocations = {}
-for i, symbol in enumerate(signal["picks"]):
-    if i < len(signal["allocations"]):
-        target_allocations[symbol] = signal["allocations"][i]
-
-# Buy new
-for symbol in to_buy:
-    if symbol not in target_allocations:
-        continue
     
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        
-        if not hist.empty:
-            current_price = hist["Close"].iloc[-1]
+    # BUY new
+    for symbol in to_buy:
+        if symbol not in target_allocations:
+            continue
+        current_price = signal.get("prices", {}).get(symbol)
+        if not current_price:
+            prices = get_current_prices([symbol])
+            current_price = prices.get(symbol, 0)
+        if current_price > 0:
             buy_price = current_price * (1 + SLIPPAGE)
-            
             allocation = target_allocations[symbol]
             invest_amount = total_value * allocation
             shares = int(invest_amount / buy_price)
-            
             if shares <= 0:
                 continue
-            
             buy_amount = shares * buy_price
             commission = buy_amount * BUY_COMMISSION
-            
             if portfolio["cash"] >= buy_amount + commission:
                 portfolio["cash"] -= (buy_amount + commission)
-                
+                score_idx = signal["picks"].index(symbol) if symbol in signal["picks"] else -1
+                score = signal["scores"][score_idx] if 0 <= score_idx < len(signal["scores"]) else 0
                 portfolio["holdings"][symbol] = {
                     "shares": shares,
-                    "avg_price": round(buy_price, 2)
+                    "avg_price": round(buy_price, 2),
+                    "sector": signal.get("sectors", {}).get(symbol, ""),
+                    "buy_date": datetime.now().strftime("%Y-%m-%d")
                 }
-                
                 trade = {
                     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "symbol": symbol,
@@ -460,57 +366,48 @@ for symbol in to_buy:
                     "price": round(buy_price, 2),
                     "amount": round(buy_amount, 2),
                     "commission": round(commission, 2),
-                    "return_rate": 0
+                    "slippage": round(current_price * SLIPPAGE * shares, 2),
+                    "return_pct": 0,
+                    "sector": signal.get("sectors", {}).get(symbol, ""),
+                    "score": round(score, 4),
+                    "memo": f"Weight: {allocation*100:.0f}%"
                 }
                 trades.append(trade)
-                
                 print(f"  BUY: {symbol} | {shares} shares | ${buy_price:.2f} | Weight: {allocation*100:.0f}%")
             else:
-                print(f"  Insufficient cash for {symbol}")
-    except Exception as e:
-        print(f"  BUY failed {symbol}: {e}")
-
-# Adjust existing holdings
-for symbol in to_keep:
-    if symbol not in portfolio["holdings"] or symbol not in target_allocations:
-        continue
+                print(f"  SKIP: {symbol} - Insufficient cash")
     
-    info = portfolio["holdings"][symbol]
-    
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        
-        if hist.empty:
+    # ADJUST existing
+    for symbol in to_keep:
+        if symbol not in portfolio["holdings"] or symbol not in target_allocations:
             continue
-        
-        current_price = hist["Close"].iloc[-1]
+        info = portfolio["holdings"][symbol]
+        current_price = signal.get("prices", {}).get(symbol)
+        if not current_price:
+            prices = get_current_prices([symbol])
+            current_price = prices.get(symbol, 0)
+        if current_price <= 0:
+            continue
         current_value = info["shares"] * current_price
         target_value = total_value * target_allocations[symbol]
-        
         diff_value = target_value - current_value
         diff_shares = int(abs(diff_value) / current_price)
-        
+        score_idx = signal["picks"].index(symbol) if symbol in signal["picks"] else -1
+        score = signal["scores"][score_idx] if 0 <= score_idx < len(signal["scores"]) else 0
         if abs(diff_value) / total_value > 0.05 and diff_shares > 0:
-            
             if diff_value > 0:
+                # ADD
                 buy_price = current_price * (1 + SLIPPAGE)
                 buy_amount = diff_shares * buy_price
                 commission = buy_amount * BUY_COMMISSION
-                
                 if portfolio["cash"] >= buy_amount + commission:
                     portfolio["cash"] -= (buy_amount + commission)
-                    
                     old_shares = info["shares"]
                     old_avg = info["avg_price"]
                     new_shares = old_shares + diff_shares
                     new_avg = (old_avg * old_shares + buy_amount) / new_shares
-                    
-                    portfolio["holdings"][symbol] = {
-                        "shares": new_shares,
-                        "avg_price": round(new_avg, 2)
-                    }
-                    
+                    portfolio["holdings"][symbol]["shares"] = new_shares
+                    portfolio["holdings"][symbol]["avg_price"] = round(new_avg, 2)
                     trade = {
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                         "symbol": symbol,
@@ -519,20 +416,21 @@ for symbol in to_keep:
                         "price": round(buy_price, 2),
                         "amount": round(buy_amount, 2),
                         "commission": round(commission, 2),
-                        "return_rate": 0
+                        "slippage": round(current_price * SLIPPAGE * diff_shares, 2),
+                        "return_pct": 0,
+                        "sector": info.get("sector", ""),
+                        "score": round(score, 4),
+                        "memo": "Position increased"
                     }
                     trades.append(trade)
-                    
                     print(f"  ADD: {symbol} | +{diff_shares} shares | ${buy_price:.2f}")
-            
             else:
+                # REDUCE
                 sell_price = current_price * (1 - SLIPPAGE)
                 sell_amount = diff_shares * sell_price
                 commission = sell_amount * SELL_COMMISSION
-                
                 portfolio["cash"] += sell_amount - commission
                 portfolio["holdings"][symbol]["shares"] -= diff_shares
-                
                 trade = {
                     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "symbol": symbol,
@@ -541,67 +439,59 @@ for symbol in to_keep:
                     "price": round(sell_price, 2),
                     "amount": round(sell_amount, 2),
                     "commission": round(commission, 2),
-                    "return_rate": 0
+                    "slippage": round(current_price * SLIPPAGE * diff_shares, 2),
+                    "return_pct": 0,
+                    "sector": info.get("sector", ""),
+                    "score": round(score, 4),
+                    "memo": "Position reduced"
                 }
                 trades.append(trade)
-                
                 print(f"  REDUCE: {symbol} | -{diff_shares} shares | ${sell_price:.2f}")
         else:
             print(f"  HOLD: {symbol} | {info['shares']} shares")
     
-    except Exception as e:
-        print(f"  Adjust failed {symbol}: {e}")
+    # Save
+    current_prices = signal.get("prices", {})
+    sheets.save_portfolio(portfolio, current_prices)
+    sheets.save_trades(trades)
+    
+    print(f"\nCompleted: {len(trades)} trades")
+    print_portfolio(sheets)
+    
+    return trades
 
-save_portfolio(portfolio)
-save_trades(trades)
-
-print("\n" + "-" * 60)
-print(f"Completed: {len(trades)} trades")
-print("-" * 60)
-
-print_portfolio(portfolio)
-
-return trades
-```
 
 # ============================================
-
 # Stop Loss
-
 # ============================================
 
-def check_stop_loss(portfolio=None):
-“”“Check and execute stop loss”””
-if portfolio is None:
-portfolio = load_portfolio()
-
-```
-trades = []
-
-print("=" * 60)
-print("Stop Loss Check")
-print("=" * 60)
-
-for symbol, info in list(portfolio["holdings"].items()):
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        
-        if hist.empty:
+def check_stop_loss(sheets):
+    portfolio = sheets.load_portfolio()
+    trades = []
+    
+    print("=" * 60)
+    print("Stop Loss Check")
+    print("=" * 60)
+    
+    symbols = list(portfolio["holdings"].keys())
+    if not symbols:
+        print("No holdings")
+        return []
+    
+    current_prices = get_current_prices(symbols)
+    
+    for symbol, info in list(portfolio["holdings"].items()):
+        current_price = current_prices.get(symbol, 0)
+        if current_price <= 0:
             continue
+        return_pct = (current_price - info["avg_price"]) / info["avg_price"]
+        print(f"  {symbol}: Avg ${info['avg_price']:.2f} | Now ${current_price:.2f} | {return_pct*100:+.2f}%")
         
-        current_price = hist["Close"].iloc[-1]
-        return_rate = (current_price - info["avg_price"]) / info["avg_price"]
-        
-        print(f"  {symbol}: Avg ${info['avg_price']:.2f} | Current ${current_price:.2f} | Return {return_rate*100:+.2f}%")
-        
-        if return_rate <= STOP_LOSS:
+        if return_pct <= STOP_LOSS:
             sell_price = current_price * (1 - SLIPPAGE)
             sell_amount = info["shares"] * sell_price
             commission = sell_amount * SELL_COMMISSION
-            
             portfolio["cash"] += sell_amount - commission
-            
             trade = {
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "symbol": symbol,
@@ -610,202 +500,245 @@ for symbol, info in list(portfolio["holdings"].items()):
                 "price": round(sell_price, 2),
                 "amount": round(sell_amount, 2),
                 "commission": round(commission, 2),
-                "return_rate": round(return_rate * 100, 2)
+                "slippage": round(current_price * SLIPPAGE * info["shares"], 2),
+                "return_pct": round(return_pct * 100, 2),
+                "sector": info.get("sector", ""),
+                "score": "",
+                "memo": f"Stop loss at {STOP_LOSS*100:.0f}%"
             }
             trades.append(trade)
-            
-            print(f"  STOP LOSS: {symbol} | {return_rate*100:.2f}% <= {STOP_LOSS*100:.0f}%")
-            
+            print(f"  >>> STOP LOSS: {symbol} | {return_pct*100:.2f}%")
             del portfolio["holdings"][symbol]
     
-    except Exception as e:
-        print(f"  Check failed {symbol}: {e}")
+    if trades:
+        sheets.save_portfolio(portfolio)
+        sheets.save_trades(trades)
+        print(f"\n{len(trades)} stop loss executed")
+    else:
+        print("\nNo stop loss needed")
+    
+    return trades
 
-if trades:
-    save_portfolio(portfolio)
-    save_trades(trades)
-    print(f"\n{len(trades)} stop loss executed")
-else:
-    print("\nNo stop loss needed")
-
-return trades
-```
 
 # ============================================
-
-# Trade History
-
+# Daily Update
 # ============================================
 
-def save_trades(trades):
-“”“Save trades to CSV”””
-init_data_dir()
+def record_daily_value(sheets):
+    portfolio = sheets.load_portfolio()
+    port_value = get_portfolio_value(portfolio)
+    spy_price = get_spy_price()
+    
+    # Load previous daily value for return calculation
+    daily_df = sheets.load_daily_values()
+    prev_value = INITIAL_CAPITAL
+    prev_spy = spy_price
+    if len(daily_df) > 0:
+        try:
+            prev_value = float(daily_df.iloc[-1]["Total_Value"])
+            prev_spy = float(daily_df.iloc[-1]["SPY_Price"])
+        except:
+            pass
+    
+    daily_return = (port_value["total"] - prev_value) / prev_value * 100 if prev_value > 0 else 0
+    spy_return = (spy_price - prev_spy) / prev_spy * 100 if prev_spy > 0 else 0
+    alpha = daily_return - spy_return
+    
+    daily_data = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "total_value": port_value["total"],
+        "cash": port_value["cash"],
+        "stocks_value": port_value["stocks"],
+        "daily_return_pct": round(daily_return, 2),
+        "spy_price": spy_price,
+        "spy_return_pct": round(spy_return, 2),
+        "alpha": round(alpha, 2)
+    }
+    
+    sheets.save_daily_value(daily_data)
+    print(f"Daily value recorded: ${port_value['total']:,.2f} ({daily_return:+.2f}%)")
+    
+    return daily_data
 
-```
-if not trades:
-    return
-
-trades_df = pd.DataFrame(trades)
-
-if os.path.exists(TRADES_FILE):
-    existing = pd.read_csv(TRADES_FILE)
-    trades_df = pd.concat([existing, trades_df], ignore_index=True)
-
-trades_df.to_csv(TRADES_FILE, index=False)
-print(f"Saved: {TRADES_FILE}")
-```
-
-def save_signal(signal):
-“”“Save signal to CSV”””
-init_data_dir()
-
-```
-record = {
-    "date": signal["date"].strftime("%Y-%m-%d") if hasattr(signal["date"], "strftime") else str(signal["date"]),
-    "signal": signal["signal"],
-    "picks": ",".join(signal.get("picks", [])),
-    "scores": ",".join([f"{s:.4f}" for s in signal.get("scores", [])]),
-    "allocations": ",".join([f"{a:.2f}" for a in signal.get("allocations", [])]),
-    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-}
-
-signals_df = pd.DataFrame([record])
-
-if os.path.exists(SIGNALS_FILE):
-    existing = pd.read_csv(SIGNALS_FILE)
-    signals_df = pd.concat([existing, signals_df], ignore_index=True)
-
-signals_df.to_csv(SIGNALS_FILE, index=False)
-print(f"Saved: {SIGNALS_FILE}")
-```
-
-def load_trades():
-“”“Load trade history”””
-if os.path.exists(TRADES_FILE):
-return pd.read_csv(TRADES_FILE)
-return pd.DataFrame()
-
-def print_trade_history():
-“”“Print trade history”””
-trades_df = load_trades()
-
-```
-print("=" * 60)
-print("Trade History")
-print("=" * 60)
-
-if trades_df.empty:
-    print("No trades")
-    return
-
-print(f"Total: {len(trades_df)} trades")
-print("-" * 60)
-print(trades_df.to_string())
-print("-" * 60)
-```
 
 # ============================================
-
-# Reset
-
+# Performance Update
 # ============================================
 
-def reset_portfolio():
-“”“Reset portfolio”””
-init_data_dir()
+def update_performance(sheets):
+    portfolio = sheets.load_portfolio()
+    port_value = get_portfolio_value(portfolio)
+    trades_df = sheets.load_trades()
+    daily_df = sheets.load_daily_values()
+    
+    # Calculate metrics
+    total_return = (port_value["total"] - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+    
+    # Days
+    start_date = portfolio.get("created_at", "")[:10]
+    if start_date:
+        try:
+            days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d")).days
+        except:
+            days = 0
+    else:
+        days = 0
+    
+    # CAGR
+    years = days / 365 if days > 0 else 0
+    cagr = ((port_value["total"] / INITIAL_CAPITAL) ** (1/years) - 1) * 100 if years > 0 else 0
+    
+    # SPY return
+    spy_return = 0
+    if len(daily_df) > 1:
+        try:
+            first_spy = float(daily_df.iloc[0]["SPY_Price"])
+            last_spy = float(daily_df.iloc[-1]["SPY_Price"])
+            spy_return = (last_spy - first_spy) / first_spy * 100
+        except:
+            pass
+    
+    # MDD
+    mdd = 0
+    if len(daily_df) > 0:
+        try:
+            values = daily_df["Total_Value"].astype(float)
+            peak = values.cummax()
+            drawdown = (values - peak) / peak * 100
+            mdd = drawdown.min()
+        except:
+            pass
+    
+    # Win rate
+    win_rate = 0
+    total_trades = len(trades_df)
+    if total_trades > 0:
+        try:
+            returns = trades_df["Return%"].astype(float)
+            wins = (returns > 0).sum()
+            win_rate = wins / total_trades * 100
+        except:
+            pass
+    
+    # Sharpe (simplified)
+    sharpe = 0
+    if len(daily_df) > 1:
+        try:
+            daily_returns = daily_df["Daily_Return%"].astype(float)
+            if daily_returns.std() > 0:
+                sharpe = (daily_returns.mean() * 252) / (daily_returns.std() * np.sqrt(252))
+        except:
+            pass
+    
+    metrics = {
+        "initial_capital": INITIAL_CAPITAL,
+        "current_value": port_value["total"],
+        "total_return_pct": total_return,
+        "cagr": cagr,
+        "spy_return_pct": spy_return,
+        "alpha": total_return - spy_return,
+        "mdd": mdd,
+        "sharpe_ratio": sharpe,
+        "win_rate": win_rate,
+        "total_trades": total_trades,
+        "start_date": start_date,
+        "days": days
+    }
+    
+    sheets.save_performance(metrics)
+    
+    print("=" * 60)
+    print("Performance Updated")
+    print("=" * 60)
+    print(f"Total Return: {total_return:+.2f}%")
+    print(f"SPY Return: {spy_return:+.2f}%")
+    print(f"Alpha: {total_return - spy_return:+.2f}%")
+    print(f"MDD: {mdd:.2f}%")
+    print(f"Win Rate: {win_rate:.1f}%")
+    print("=" * 60)
+    
+    return metrics
 
-```
-confirm = input("Reset all data? (y/N): ")
-
-if confirm.lower() != "y":
-    print("Cancelled")
-    return
-
-for f in [PORTFOLIO_FILE, TRADES_FILE, SIGNALS_FILE]:
-    if os.path.exists(f):
-        os.remove(f)
-        print(f"Deleted: {f}")
-
-portfolio = load_portfolio()
-print(f"\nReset complete! Initial capital: ${INITIAL_CAPITAL:,}")
-```
 
 # ============================================
-
-# Compare with Backtest
-
+# Main Functions
 # ============================================
 
-def compare_with_backtest(backtest_result):
-“”“Compare paper trading with backtest”””
-portfolio = load_portfolio()
-port_value = get_portfolio_value(portfolio)
+def run_daily(sheets=None):
+    """Daily routine: check stop loss, record value"""
+    if sheets is None:
+        sheets = SheetsManager()
+    
+    print("\n" + "=" * 60)
+    print(f"Daily Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+    
+    # Check stop loss
+    check_stop_loss(sheets)
+    
+    # Record daily value
+    record_daily_value(sheets)
+    
+    # Update performance
+    update_performance(sheets)
 
-```
-pt_return = (port_value["total"] - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
 
-bt_metrics = backtest_result["metrics"]
-bt_return = bt_metrics["total_return"] * 100
-
-print("=" * 60)
-print("Backtest vs Paper Trading")
-print("=" * 60)
-
-print(f"\nBacktest (5 years)")
-print(f"  Total Return: {bt_return:.2f}%")
-print(f"  MDD: {bt_metrics['mdd']*100:.2f}%")
-print(f"  Sharpe: {bt_metrics['sharpe_ratio']:.2f}")
-
-print(f"\nPaper Trading")
-print(f"  Total Return: {pt_return:.2f}%")
-print(f"  Current Value: ${port_value['total']:,.2f}")
-print(f"  Started: {portfolio['created_at']}")
-
-print("=" * 60)
-```
-
-# ============================================
-
-# Main
-
-# ============================================
-
-def main():
-“”“Main function”””
-import sys
-
-```
-if len(sys.argv) < 2:
-    print("Usage: python paper_trading.py [signal|portfolio|execute|stoploss|history|reset]")
-    return
-
-command = sys.argv[1].lower()
-
-if command == "signal":
+def run_weekly(sheets=None):
+    """Weekly routine: generate signal, execute trades"""
+    if sheets is None:
+        sheets = SheetsManager()
+    
+    print("\n" + "=" * 60)
+    print(f"Weekly Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+    
+    # Generate signal
     signal = get_today_signal()
-    save_signal(signal)
-
-elif command == "portfolio":
-    print_portfolio()
-
-elif command == "execute":
-    signal = get_today_signal()
+    
+    # Save signal
+    sheets.save_signal(signal)
+    
+    # Execute if BUY
     if signal["signal"] == "BUY":
-        execute_signal(signal)
-    save_signal(signal)
+        execute_signal(signal, sheets)
+    
+    # Record daily value
+    record_daily_value(sheets)
+    
+    # Update performance
+    update_performance(sheets)
 
-elif command == "stoploss":
-    check_stop_loss()
 
-elif command == "history":
-    print_trade_history()
+# ============================================
+# Test
+# ============================================
 
-elif command == "reset":
-    reset_portfolio()
-
-else:
-    print(f"Unknown command: {command}")
-```
-
-if **name** == “**main**”:
-main()
+if __name__ == "__main__":
+    import sys
+    
+    sheets = SheetsManager()
+    
+    if len(sys.argv) < 2:
+        print("Usage: python paper_trading.py [signal|portfolio|execute|stoploss|daily|weekly]")
+        sys.exit(1)
+    
+    cmd = sys.argv[1].lower()
+    
+    if cmd == "signal":
+        signal = get_today_signal()
+        sheets.save_signal(signal)
+    elif cmd == "portfolio":
+        print_portfolio(sheets)
+    elif cmd == "execute":
+        signal = get_today_signal()
+        sheets.save_signal(signal)
+        if signal["signal"] == "BUY":
+            execute_signal(signal, sheets)
+    elif cmd == "stoploss":
+        check_stop_loss(sheets)
+    elif cmd == "daily":
+        run_daily(sheets)
+    elif cmd == "weekly":
+        run_weekly(sheets)
+    else:
+        print(f"Unknown command: {cmd}")
