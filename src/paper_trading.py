@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
+import requests
+from io import StringIO
 
 from src.strategy import (
     CustomStrategy,
