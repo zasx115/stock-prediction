@@ -20,15 +20,15 @@ import json
 # ============================================
 
 SPREADSHEET_NAME = "Stock_Paper_Trading"
-SERVICE_ACCOUNT_FILE = “service_account.json”
+SERVICE_ACCOUNT_FILE = "service_account.json"
 
-SHEET_PORTFOLIO = “Portfolio”
-SHEET_TRADES = “Trades”
-SHEET_SIGNALS = “Signals”
+SHEET_PORTFOLIO = "Portfolio"
+SHEET_TRADES = "Trades"
+SHEET_SIGNALS = "Signals"
 
 SCOPES = [
-“https://www.googleapis.com/auth/spreadsheets”,
-“https://www.googleapis.com/auth/drive”
+"https://www.googleapis.com/auth/spreadsheets",
+"https://www.googleapis.com/auth/drive"
 ]
 
 # ============================================
@@ -39,7 +39,6 @@ SCOPES = [
 
 class SheetsManager:
 
-```
 def __init__(self, spreadsheet_name=SPREADSHEET_NAME):
     self.spreadsheet_name = spreadsheet_name
     self.gc = None
