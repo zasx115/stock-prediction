@@ -35,8 +35,7 @@ def get_sp500_list():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {'User-Agent': 'Mozilla/5.0'}
     response = requests.get(url, headers=headers)
-    #tables = pd.read_html(url)
-    table = pd.read_html(StringIO(response.text))
+    tables = pd.read_html(StringIO(response.text))
     
     df = tables[0]
     df = df[["Symbol", "Security", "GICS Sector"]].copy()
