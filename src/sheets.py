@@ -342,9 +342,9 @@ def get_summary(self):
 
 # ============================================
 
-if __name__ == “__main__”:
+if __name__ == "__main__":
 print(“SheetsManager Test”)
-print(”=” * 60)
+print('=' * 60)
 
 
 sheets = SheetsManager()
