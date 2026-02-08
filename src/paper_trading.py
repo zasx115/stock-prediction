@@ -32,10 +32,25 @@ LOOKBACK_DAYS = 200
 # ============================================
 
 def get_sp500_list():
+    #url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    #headers = {'User-Agent': 'Mozilla/5.0'}
+    #response = requests.get(url, headers=headers)
+    #tables = pd.read_html(StringIO(response.text))
+    
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers)
+    # 1. 조금 더 구체적인 User-Agent 설정 (브라우저인 것처럼 위장)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    # 2. requests를 통해 먼저 HTML 소스를 가져옴
+    response = requests.get(url, headers=headers, timeout=10)
+    # HTTP 상태 코드가 200이 아닐 경우 에러 발생시킴
+    response.raise_for_status() 
+        
+    # 3. StringIO를 사용하여 pandas가 내부적으로 재요청하지 않게 함
+    # 이전에 발생했던 오타 수정 (table -> tables[0])
     tables = pd.read_html(StringIO(response.text))
+    df = tables[0]
     
     df = tables[0]
     df = df[["Symbol", "Security", "GICS Sector"]].copy()
