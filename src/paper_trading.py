@@ -33,13 +33,17 @@ LOOKBACK_DAYS = 200
 
 def get_sp500_list():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    tables = pd.read_html(url)
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
+    #tables = pd.read_html(url)
+    table = pd.read_html(StringIO(response.text))
+    
     df = tables[0]
     df = df[["Symbol", "Security", "GICS Sector"]].copy()
     df.columns = ["symbol", "company", "sector"]
     df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
     return df
-
+    
 
 def download_recent_data(symbols, days=LOOKBACK_DAYS):
     end_date = datetime.now()
