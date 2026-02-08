@@ -19,7 +19,7 @@ import json
 
 # ============================================
 
-SPREADSHEET_NAME = “Stock_Paper_Trading”
+SPREADSHEET_NAME = "Stock_Paper_Trading"
 SERVICE_ACCOUNT_FILE = “service_account.json”
 
 SHEET_PORTFOLIO = “Portfolio”
