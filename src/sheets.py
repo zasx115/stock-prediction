@@ -347,8 +347,7 @@ if **name** == “**main**”:
 print(“SheetsManager Test”)
 print(”=” * 60)
 
-```
+
 sheets = SheetsManager()
 print(f"URL: {sheets.get_url()}")
 sheets.get_summary()
-```
