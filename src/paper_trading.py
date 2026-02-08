@@ -34,38 +34,37 @@ LOOKBACK_DAYS = 200
 # ============================================
 
 def get_sp500_list():
-"""
-    위키피디아에서 S&P 500 리스트를 안전하게 가져옵니다.
     """
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    
-    # 브라우저처럼 보이게 만드는 헤더 설정
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
+    위키피디아에서 S&P 500 종목 리스트를 가져옵니다.
+    사용자가 제공한 정상 동작 코드를 기반으로 작성되었습니다.
+    """
     try:
-        # 1. requests를 사용하여 HTML 소스 코드를 먼저 가져옵니다.
+        # S&P 500 리스트 위키피디아 주소
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        
+        # 브라우저 접근처럼 보이게 하기 위한 헤더 설정
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        # 1. requests를 사용하여 HTML 소스 가져오기
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # 200 OK가 아니면 에러를 발생시킵니다.
+        response.raise_for_status() # 403 등 에러 발생 시 예외 처리로 이동
         
-        # 2. StringIO를 사용하여 pandas가 URL을 직접 호출하지 못하게 방어합니다.
-        # 이렇게 하면 pandas는 이미 다운로드된 텍스트만 읽게 됩니다.
-        tables = pd.read_html(StringIO(response.text))
-        df = tables[0]
+        # 2. StringIO를 사용하여 pandas에 전달 (직접 URL 호출 방지)
+        table = pd.read_html(StringIO(response.text))
         
-        # 3. 데이터 정리
-        df = df[["Symbol", "Security", "GICS Sector"]].copy()
-        df.columns = ["symbol", "company", "sector"]
+        # 3. 데이터프레임 가공
+        sp500 = table[0][['Symbol', 'Security', 'GICS Sector']].copy()
+        sp500.columns = ['symbol', 'name', 'sector']
         
-        # 티커의 점(.)을 하이픈(-)으로 변경 (yfinance 호환성)
-        df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
+        # 티커 심볼 내의 마침표(.)를 하이픈(-)으로 변경 (yfinance 호환용)
+        sp500['symbol'] = sp500['symbol'].replace('\.', '-', regex=True)
         
-        return df
-
+        print(f"✅ S&P 500 {len(sp500)}개 종목 로드 완료!")
+        return sp500
+        
     except Exception as e:
-        print(f"S&P 500 리스트 로딩 실패: {e}")
-        # 실패 시 빈 데이터프레임 혹은 예외 처리를 수행합니다.
+        # 에러 발생 시 상세 내용 출력 후 빈 데이터프레임 반환
+        print(f"❌ S&P 500 리스트 로드 실패: {e}")
         return pd.DataFrame()
     
 
