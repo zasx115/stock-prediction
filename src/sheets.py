@@ -1,9 +1,6 @@
 # ============================================
-
 # src/sheets.py
-
 # Google Sheets Connection Module
-
 # ============================================
 
 import gspread
@@ -14,9 +11,7 @@ import os
 import json
 
 # ============================================
-
 # Settings
-
 # ============================================
 
 SPREADSHEET_NAME = "Stock_Paper_Trading"
@@ -27,17 +22,17 @@ SHEET_TRADES = "Trades"
 SHEET_SIGNALS = "Signals"
 
 SCOPES = [
-"https://www.googleapis.com/auth/spreadsheets",
-"https://www.googleapis.com/auth/drive"
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
 ]
 
+
 # ============================================
-
 # SheetsManager Class
-
 # ============================================
 
 class SheetsManager:
+    
     def __init__(self, spreadsheet_name=SPREADSHEET_NAME):
         self.spreadsheet_name = spreadsheet_name
         self.gc = None
@@ -130,7 +125,7 @@ class SheetsManager:
                 title=sheet_name, rows=1000, cols=15
             )
     
-
+    
     # ============================================
     # Portfolio Save/Load
     # ============================================
@@ -335,16 +330,15 @@ class SheetsManager:
         
         print("=" * 60)
 
-# ============================================
 
+# ============================================
 # Test
-
 # ============================================
 
-    if __name__ == "__main__":
-        print("SheetsManager Test")
-        print('=' * 60)
-        
-        sheets = SheetsManager()
-        print(f"URL: {sheets.get_url()}")
-        sheets.get_summary()
+if __name__ == "__main__":
+    print("SheetsManager Test")
+    print("=" * 60)
+    
+    sheets = SheetsManager()
+    print(f"URL: {sheets.get_url()}")
+    sheets.get_summary()
