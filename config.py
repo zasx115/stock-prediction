@@ -128,7 +128,26 @@ GOOGLE_CREDENTIALS_FILE = "credentials.json"
 
 
 # ============================================
-# 7. AI 모델 설정
+# 7. 한국투자증권(KIS) API 설정
+# ============================================
+
+# KIS Open API 키 (환경변수에서 가져옴)
+# - 발급: https://apiportal.koreainvestment.com 에서 앱 등록
+# - APP_KEY, APP_SECRET은 GitHub Secrets에 저장
+KIS_APP_KEY = os.getenv("KIS_APP_KEY", "")
+KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "")
+
+# 계좌 정보
+KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "")           # 계좌번호 (8자리)
+KIS_ACCOUNT_PRODUCT = os.getenv("KIS_ACCOUNT_PRODUCT", "01")  # 계좌상품코드
+
+# 모의투자 / 실전투자 전환
+# True: 모의투자 (기본값, 안전), False: 실전투자
+KIS_PAPER_TRADE = True
+
+
+# ============================================
+# 8. AI 모델 설정
 # ============================================
 
 # 모델 저장 경로
@@ -142,7 +161,7 @@ LOOKBACK_DAYS = 60        # 과거 며칠 데이터를 볼지
 
 
 # ============================================
-# 8. 백테스트 설정
+# 9. 백테스트 설정
 # ============================================
 
 # 백테스트 기간
