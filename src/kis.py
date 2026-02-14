@@ -8,7 +8,7 @@ import requests
 import json
 from datetime import datetime, timedelta
 
-from src.config import (
+from config import (
     get_kis_url,
     get_kis_credentials,
     get_exchange,
