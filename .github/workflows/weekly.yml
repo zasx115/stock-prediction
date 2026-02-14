@@ -1,0 +1,81 @@
+# ============================================
+# .github/workflows/weekly.yml
+# 주간 실행 워크플로우 (화요일)
+# - 신호 생성
+# - 매매 실행
+# - 손절 체크
+# - 일일 가치 기록
+# - 성과 업데이트
+# ============================================
+
+name: Weekly Trading
+
+on:
+  # 스케줄: 화요일 06:45 UTC (한국시간 15:45)
+  # 미국 장 마감 후 실행
+  schedule:
+    - cron: '45 6 * * 2'
+  
+  # 수동 실행
+  workflow_dispatch:
+
+jobs:
+  weekly-run:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 코드 체크아웃
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # 2. Python 설정
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      # 3. 의존성 캐시
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      # 4. 라이브러리 설치
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      # 5. Google 서비스 계정 설정
+      - name: Setup Google credentials
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > service_account.json
+      
+      # 6. 주간 루틴 실행
+      - name: Run weekly routine
+        env:
+          # 한투 API
+          KIS_PAPER_APP_KEY: ${{ secrets.KIS_PAPER_APP_KEY }}
+          KIS_PAPER_APP_SECRET: ${{ secrets.KIS_PAPER_APP_SECRET }}
+          KIS_PAPER_ACCOUNT: ${{ secrets.KIS_PAPER_ACCOUNT }}
+          KIS_HTS_ID: ${{ secrets.KIS_HTS_ID }}
+          KIS_MODE: "paper"
+          
+          # Telegram
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+          # Google Sheets
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          cd src
+          python -c "from paper_trading import run_weekly; run_weekly()"
+      
+      # 7. 정리
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f service_account.json
