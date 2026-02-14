@@ -26,8 +26,12 @@ _token_expires = None
 
 
 def get_token():
+    """
+    접근 토큰 발급
+    """
     global _token, _token_expires
     
+    # 기존 토큰 유효하면 재사용
     if _token and _token_expires:
         if datetime.now() < _token_expires:
             return _token
@@ -59,6 +63,9 @@ def get_token():
 
 
 def _get_headers(tr_id):
+    """
+    API 호출용 헤더 생성
+    """
     creds = get_kis_credentials()
     token = get_token()
     
@@ -72,15 +79,67 @@ def _get_headers(tr_id):
     }
 
 
+def _get_tr_id(base_id, is_buy=True):
+    """
+    모의투자/실전투자에 따른 tr_id 반환
+    
+    해외주식 tr_id:
+    - 실전 매수: TTTT1002U
+    - 실전 매도: TTTT1006U
+    - 모의 매수: VTTT1002U
+    - 모의 매도: VTTT1001U
+    - 실전 잔고: TTTS3012R
+    - 모의 잔고: VTTS3012R
+    - 실전 체결: TTTS3035R
+    - 모의 체결: VTTS3035R
+    """
+    if KIS_MODE == "paper":
+        # 모의투자
+        if base_id == "balance":
+            return "VTTS3012R"
+        elif base_id == "buy":
+            return "VTTT1002U"
+        elif base_id == "sell":
+            return "VTTT1001U"
+        elif base_id == "orders":
+            return "VTTS3035R"
+        elif base_id == "price":
+            return "HHDFS76200200"
+    else:
+        # 실전투자
+        if base_id == "balance":
+            return "TTTS3012R"
+        elif base_id == "buy":
+            return "TTTT1002U"
+        elif base_id == "sell":
+            return "TTTT1006U"
+        elif base_id == "orders":
+            return "TTTS3035R"
+        elif base_id == "price":
+            return "HHDFS76200200"
+    
+    return base_id
+
+
 # ============================================
 # Get Current Price
 # ============================================
 
 def get_price(symbol, exchange=None):
+    """
+    해외주식 현재가 조회
+    
+    Args:
+        symbol: 종목코드 (예: "AAPL")
+        exchange: 거래소 (None이면 자동판단)
+    
+    Returns:
+        dict: 시세 정보 또는 None
+    """
     if exchange is None:
         exchange = get_exchange(symbol)
     
-    tr_id = "HHDFS76200200"
+    tr_id = _get_tr_id("price")
     url = f"{get_kis_url()}/uapi/overseas-price/v1/quotations/price"
     
     headers = _get_headers(tr_id)
@@ -99,13 +158,13 @@ def get_price(symbol, exchange=None):
             output = data.get("output", {})
             return {
                 "symbol": symbol,
-                "price": float(output.get("last", 0)),
-                "change": float(output.get("diff", 0)),
-                "change_pct": float(output.get("rate", 0)),
-                "volume": int(float(output.get("tvol", 0))),
-                "open": float(output.get("open", 0)),
-                "high": float(output.get("high", 0)),
-                "low": float(output.get("low", 0)),
+                "price": float(output.get("last", 0) or 0),
+                "change": float(output.get("diff", 0) or 0),
+                "change_pct": float(output.get("rate", 0) or 0),
+                "volume": int(float(output.get("tvol", 0) or 0)),
+                "open": float(output.get("open", 0) or 0),
+                "high": float(output.get("high", 0) or 0),
+                "low": float(output.get("low", 0) or 0),
                 "time": output.get("ordy", "")
             }
         else:
@@ -117,6 +176,15 @@ def get_price(symbol, exchange=None):
 
 
 def get_prices(symbols):
+    """
+    여러 종목 현재가 조회
+    
+    Args:
+        symbols: 종목코드 리스트
+    
+    Returns:
+        dict: {symbol: price, ...}
+    """
     result = {}
     for symbol in symbols:
         price_data = get_price(symbol)
@@ -130,10 +198,14 @@ def get_prices(symbols):
 # ============================================
 
 def get_balance():
-    creds = get_kis_credentials()
+    """
+    해외주식 잔고 조회
     
-    # 모의투자: VTTS3012R, 실전: TTTS3012R
-    tr_id = "VTTS3012R" if KIS_MODE == "paper" else "TTTS3012R"
+    Returns:
+        dict: 잔고 정보 또는 None
+    """
+    creds = get_kis_credentials()
+    tr_id = _get_tr_id("balance")
     url = f"{get_kis_url()}/uapi/overseas-stock/v1/trading/inquire-balance"
     
     headers = _get_headers(tr_id)
@@ -155,35 +227,48 @@ def get_balance():
             output1 = data.get("output1", [])
             output2 = data.get("output2", {})
             
+            # 보유 종목
             holdings = []
             for item in output1:
-                qty = int(float(item.get("ovrs_cblc_qty", 0)))
+                qty = int(float(item.get("ovrs_cblc_qty", 0) or 0))
                 if qty > 0:
+                    avg_price = float(item.get("pchs_avg_pric", 0) or 0)
+                    current_price = float(item.get("now_pric2", 0) or 0)
+                    value = float(item.get("ovrs_stck_evlu_amt", 0) or 0)
+                    profit_loss = float(item.get("frcr_evlu_pfls_amt", 0) or 0)
+                    profit_loss_pct = float(item.get("evlu_pfls_rt", 0) or 0)
+                    
                     holdings.append({
                         "symbol": item.get("ovrs_pdno", ""),
                         "name": item.get("ovrs_item_name", ""),
                         "shares": qty,
-                        "avg_price": float(item.get("pchs_avg_pric", 0)),
-                        "current_price": float(item.get("now_pric2", 0)),
-                        "value": float(item.get("ovrs_stck_evlu_amt", 0)),
-                        "profit_loss": float(item.get("frcr_evlu_pfls_amt", 0)),
-                        "profit_loss_pct": float(item.get("evlu_pfls_rt", 0))
+                        "avg_price": avg_price,
+                        "current_price": current_price,
+                        "value": value,
+                        "profit_loss": profit_loss,
+                        "profit_loss_pct": profit_loss_pct
                     })
             
+            # 현금 및 총 평가
             cash_usd = 0
             total_eval = 0
             if output2:
-                cash_usd = float(output2.get("frcr_dncl_amt_2", 0))
-                total_eval = float(output2.get("tot_evlu_pfls_amt", 0))
+                cash_usd = float(output2.get("frcr_dncl_amt_2", 0) or 0)
+                total_eval = float(output2.get("tot_evlu_pfls_amt", 0) or 0)
+            
+            # 총 자산 계산
+            stocks_value = sum(h["value"] for h in holdings)
+            total_value = cash_usd + stocks_value
             
             return {
                 "holdings": holdings,
                 "cash": cash_usd,
-                "total_value": cash_usd + sum(h["value"] for h in holdings),
+                "stocks_value": stocks_value,
+                "total_value": total_value,
                 "total_profit_loss": total_eval
             }
         else:
-            print(f"Balance error: {data.get('msg1')}")
+            print(f"Balance error: {data.get('msg1')} ({data.get('msg_cd')})")
             return None
     except Exception as e:
         print(f"Balance error: {e}")
@@ -195,16 +280,29 @@ def get_balance():
 # ============================================
 
 def buy(symbol, qty, price=0, exchange=None):
+    """
+    해외주식 매수 주문
+    
+    Args:
+        symbol: 종목코드
+        qty: 수량
+        price: 가격 (0이면 시장가)
+        exchange: 거래소
+    
+    Returns:
+        dict: 주문 결과
+    """
     if exchange is None:
         exchange = get_exchange(symbol)
     
     creds = get_kis_credentials()
-    
-    # 모의투자: VTTT1002U, 실전: TTTT1002U
-    tr_id = "VTTT1002U" if KIS_MODE == "paper" else "TTTT1002U"
+    tr_id = _get_tr_id("buy")
     url = f"{get_kis_url()}/uapi/overseas-stock/v1/trading/order"
     
     headers = _get_headers(tr_id)
+    
+    # 주문 구분: 00=지정가, 01=시장가
+    ord_dvsn = "00" if price > 0 else "01"
     
     body = {
         "CANO": creds["account"],
@@ -214,7 +312,7 @@ def buy(symbol, qty, price=0, exchange=None):
         "ORD_QTY": str(int(qty)),
         "OVRS_ORD_UNPR": str(price) if price > 0 else "0",
         "ORD_SVR_DVSN_CD": "0",
-        "ORD_DVSN": "00" if price > 0 else "01"  # 00: 지정가, 01: 시장가
+        "ORD_DVSN": ord_dvsn
     }
     
     try:
@@ -254,16 +352,28 @@ def buy(symbol, qty, price=0, exchange=None):
 # ============================================
 
 def sell(symbol, qty, price=0, exchange=None):
+    """
+    해외주식 매도 주문
+    
+    Args:
+        symbol: 종목코드
+        qty: 수량
+        price: 가격 (0이면 시장가)
+        exchange: 거래소
+    
+    Returns:
+        dict: 주문 결과
+    """
     if exchange is None:
         exchange = get_exchange(symbol)
     
     creds = get_kis_credentials()
-    
-    # 모의투자: VTTT1001U, 실전: TTTT1006U
-    tr_id = "VTTT1001U" if KIS_MODE == "paper" else "TTTT1006U"
+    tr_id = _get_tr_id("sell")
     url = f"{get_kis_url()}/uapi/overseas-stock/v1/trading/order"
     
     headers = _get_headers(tr_id)
+    
+    ord_dvsn = "00" if price > 0 else "01"
     
     body = {
         "CANO": creds["account"],
@@ -273,7 +383,7 @@ def sell(symbol, qty, price=0, exchange=None):
         "ORD_QTY": str(int(qty)),
         "OVRS_ORD_UNPR": str(price) if price > 0 else "0",
         "ORD_SVR_DVSN_CD": "0",
-        "ORD_DVSN": "00" if price > 0 else "01"
+        "ORD_DVSN": ord_dvsn
     }
     
     try:
@@ -313,6 +423,16 @@ def sell(symbol, qty, price=0, exchange=None):
 # ============================================
 
 def get_orders(start_date=None, end_date=None):
+    """
+    주문 내역 조회
+    
+    Args:
+        start_date: 시작일 (YYYYMMDD)
+        end_date: 종료일 (YYYYMMDD)
+    
+    Returns:
+        list: 주문 내역
+    """
     creds = get_kis_credentials()
     
     if start_date is None:
@@ -320,8 +440,7 @@ def get_orders(start_date=None, end_date=None):
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
     
-    # 모의투자: VTTS3035R, 실전: TTTS3035R
-    tr_id = "VTTS3035R" if KIS_MODE == "paper" else "TTTS3035R"
+    tr_id = _get_tr_id("orders")
     url = f"{get_kis_url()}/uapi/overseas-stock/v1/trading/inquire-ccnl"
     
     headers = _get_headers(tr_id)
@@ -354,10 +473,10 @@ def get_orders(start_date=None, end_date=None):
                     "order_no": item.get("odno", ""),
                     "symbol": item.get("pdno", ""),
                     "action": "BUY" if item.get("sll_buy_dvsn_cd") == "02" else "SELL",
-                    "qty": int(float(item.get("ft_ord_qty", 0))),
-                    "price": float(item.get("ft_ord_unpr3", 0)),
-                    "filled_qty": int(float(item.get("ft_ccld_qty", 0))),
-                    "filled_price": float(item.get("ft_ccld_unpr3", 0)),
+                    "qty": int(float(item.get("ft_ord_qty", 0) or 0)),
+                    "price": float(item.get("ft_ord_unpr3", 0) or 0),
+                    "filled_qty": int(float(item.get("ft_ccld_qty", 0) or 0)),
+                    "filled_price": float(item.get("ft_ccld_unpr3", 0) or 0),
                     "status": item.get("ord_dvsn_name", ""),
                     "time": item.get("ord_tmd", "")
                 })
@@ -375,21 +494,19 @@ def get_orders(start_date=None, end_date=None):
 # ============================================
 
 def is_market_open():
+    """
+    미국 장 오픈 여부 확인 (대략적)
+    """
     now = datetime.now()
-    
-    # 미국 동부시간 기준 (한국시간 -14시간, 서머타임 -13시간)
-    # 장 시간: 9:30 ~ 16:00 EST
-    # 한국시간: 23:30 ~ 06:00 (겨울), 22:30 ~ 05:00 (여름)
     
     # 주말 체크
     if now.weekday() >= 5:
         return False
     
-    hour = now.hour
-    
-    # 대략적인 체크 (한국시간 기준)
+    # 한국시간 기준 대략적 체크
     # 겨울: 23:30 ~ 06:00
     # 여름: 22:30 ~ 05:00
+    hour = now.hour
     if 22 <= hour or hour < 7:
         return True
     
@@ -401,6 +518,9 @@ def is_market_open():
 # ============================================
 
 def print_balance():
+    """
+    잔고 출력
+    """
     balance = get_balance()
     
     if balance is None:
@@ -411,8 +531,8 @@ def print_balance():
     print("Portfolio Balance")
     print("=" * 60)
     print(f"Cash: ${balance['cash']:,.2f}")
-    print(f"Total Value: ${balance['total_value']:,.2f}")
-    print(f"Profit/Loss: ${balance['total_profit_loss']:,.2f}")
+    print(f"Stocks: ${balance['stocks_value']:,.2f}")
+    print(f"Total: ${balance['total_value']:,.2f}")
     print()
     
     if balance["holdings"]:
