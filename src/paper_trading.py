@@ -11,7 +11,7 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 
-from src.config import (
+from config import (
     INITIAL_CAPITAL,
     STOP_LOSS,
     TOP_N,
