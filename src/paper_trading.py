@@ -28,7 +28,7 @@ from telegram import (
     send_stop_loss,
     send_daily_summary,
     send_error,
-    send_message
+    send_trade_signal
 )
 
 
@@ -563,10 +563,7 @@ def run_weekly(sheets=None):
         
         # 매매 안내 메시지
         if signal["signal"] == "BUY":
-            msg = "📢 매매 신호 발생!\n"
-            msg += "→ 한투 앱에서 수동 매매 후\n"
-            msg += "→ 구글시트 Holdings에 기록해주세요."
-            send_message(msg)
+            send_trade_signal()
         
         # 손절 체크 (알림만)
         stop_alerts = check_stop_loss(sheets)
