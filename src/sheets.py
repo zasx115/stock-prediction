@@ -36,13 +36,20 @@ SCOPES = [
 # Headers
 HEADERS = {
     SHEET_HOLDINGS: ["Symbol", "Shares", "Avg_Price", "Sector", "Buy_Date"],
-    SHEET_TRADES: ["Date", "Symbol", "Action", "Shares", "Price", "Amount", "Return%", "Sector", "Memo"],
+    SHEET_TRADES: ["Date", "Symbol", "Action", "Shares", "Price", "Amount", "Commission", "Return%", "Realized_PnL", "Sector", "Memo"],
     SHEET_SIGNALS: ["Timestamp", "Analysis_Date", "Signal", "Picks", "Scores", "Allocations", "Market_Momentum", "SPY_Price", "Market_Trend"],
     SHEET_DAILY: ["Date", "Total_Value", "Cash", "Stocks_Value", "Daily_Return%", "SPY_Price", "SPY_Return%", "Alpha"],
-    SHEET_MONTHLY: ["Year_Month", "Start_Value", "End_Value", "Monthly_Return%", "SPY_Return%", "Alpha", "Best_Stock", "Worst_Stock"],
-    SHEET_YEARLY: ["Year", "Start_Value", "End_Value", "Yearly_Return%", "SPY_Return%", "Alpha", "Total_Trades", "Win_Rate"],
+    SHEET_MONTHLY: ["Year_Month", "Start_Value", "End_Value", "Monthly_Return%", "SPY_Return%", "Alpha", "Trades", "Commission", "Realized_PnL"],
+    SHEET_YEARLY: ["Year", "Start_Value", "End_Value", "Yearly_Return%", "SPY_Return%", "Alpha", "Total_Trades", "Win_Rate", "Total_Commission", "Total_Realized_PnL", "Est_Tax"],
     SHEET_PERFORMANCE: ["Metric", "Value"]
 }
+
+# 수수료율 (0.1%)
+COMMISSION_RATE = 0.001
+
+# 해외주식 양도소득세 (22% - 기본공제 250만원)
+TAX_RATE = 0.22
+TAX_EXEMPTION = 2500000  # 원
 
 
 # ============================================
@@ -260,10 +267,10 @@ class SheetsManager:
     
     def save_trades(self, trades):
         """
-        Append trades to sheet
+        Append trades to sheet (수수료 자동 계산)
         
         Args:
-            trades: list of {date, symbol, action, shares, price, amount, return_pct, sector, memo}
+            trades: list of {date, symbol, action, shares, price, amount, return_pct, realized_pnl, sector, memo}
         """
         if not trades:
             return
@@ -277,14 +284,19 @@ class SheetsManager:
         
         # Append trades
         for t in trades:
+            amount = t.get("amount", 0)
+            commission = round(amount * COMMISSION_RATE, 2)  # 0.1% 수수료
+            
             ws.append_row([
                 t.get("date", ""),
                 t.get("symbol", ""),
                 t.get("action", ""),
                 t.get("shares", 0),
                 t.get("price", 0),
-                t.get("amount", 0),
+                amount,
+                commission,
                 t.get("return_pct", 0),
+                t.get("realized_pnl", 0),
                 t.get("sector", ""),
                 t.get("memo", "")
             ])
@@ -411,7 +423,8 @@ class SheetsManager:
         Append monthly value to sheet
         
         Args:
-            monthly_data: {year_month, start_value, end_value, monthly_return_pct, spy_return_pct, alpha, best_stock, worst_stock}
+            monthly_data: {year_month, start_value, end_value, monthly_return_pct, 
+                          spy_return_pct, alpha, trades, commission, realized_pnl}
         """
         ws = self._get_worksheet(SHEET_MONTHLY)
         
@@ -427,11 +440,87 @@ class SheetsManager:
             monthly_data.get("monthly_return_pct", 0),
             monthly_data.get("spy_return_pct", 0),
             monthly_data.get("alpha", 0),
-            monthly_data.get("best_stock", ""),
-            monthly_data.get("worst_stock", "")
+            monthly_data.get("trades", 0),
+            monthly_data.get("commission", 0),
+            monthly_data.get("realized_pnl", 0)
         ])
         
         print(f"Monthly value saved ({monthly_data.get('year_month', '')})")
+    
+    
+    def update_monthly_summary(self):
+        """
+        월간 리포트 자동 생성 (Daily_Value + Trades 기반)
+        """
+        daily_df = self.load_daily_values()
+        trades_df = self.load_trades()
+        
+        if daily_df.empty:
+            print("No daily data for monthly summary")
+            return
+        
+        # 날짜 파싱
+        daily_df["Date"] = pd.to_datetime(daily_df["Date"])
+        daily_df["Year_Month"] = daily_df["Date"].dt.strftime("%Y-%m")
+        
+        if not trades_df.empty:
+            trades_df["Date"] = pd.to_datetime(trades_df["Date"])
+            trades_df["Year_Month"] = trades_df["Date"].dt.strftime("%Y-%m")
+        
+        # 기존 월간 데이터
+        existing_months = []
+        monthly_df = self.load_monthly_values()
+        if not monthly_df.empty:
+            existing_months = monthly_df["Year_Month"].tolist()
+        
+        # 월별 집계
+        for ym in daily_df["Year_Month"].unique():
+            if ym in existing_months:
+                continue
+            
+            month_daily = daily_df[daily_df["Year_Month"] == ym].copy()
+            month_daily = month_daily.sort_values("Date")
+            
+            if len(month_daily) < 2:
+                continue
+            
+            # 수익률 계산
+            start_value = float(month_daily.iloc[0]["Total_Value"])
+            end_value = float(month_daily.iloc[-1]["Total_Value"])
+            monthly_return = (end_value - start_value) / start_value * 100 if start_value > 0 else 0
+            
+            # SPY 수익률
+            start_spy = float(month_daily.iloc[0]["SPY_Price"])
+            end_spy = float(month_daily.iloc[-1]["SPY_Price"])
+            spy_return = (end_spy - start_spy) / start_spy * 100 if start_spy > 0 else 0
+            
+            # 거래 집계
+            trades_count = 0
+            commission_sum = 0
+            realized_pnl_sum = 0
+            
+            if not trades_df.empty:
+                month_trades = trades_df[trades_df["Year_Month"] == ym]
+                trades_count = len(month_trades)
+                try:
+                    commission_sum = month_trades["Commission"].astype(float).sum()
+                    realized_pnl_sum = month_trades["Realized_PnL"].astype(float).sum()
+                except:
+                    pass
+            
+            monthly_data = {
+                "year_month": ym,
+                "start_value": round(start_value, 2),
+                "end_value": round(end_value, 2),
+                "monthly_return_pct": round(monthly_return, 2),
+                "spy_return_pct": round(spy_return, 2),
+                "alpha": round(monthly_return - spy_return, 2),
+                "trades": trades_count,
+                "commission": round(commission_sum, 2),
+                "realized_pnl": round(realized_pnl_sum, 2)
+            }
+            
+            self.save_monthly_value(monthly_data)
     
     
     def load_monthly_values(self):
@@ -456,7 +545,8 @@ class SheetsManager:
         Append yearly value to sheet
         
         Args:
-            yearly_data: {year, start_value, end_value, yearly_return_pct, spy_return_pct, alpha, total_trades, win_rate}
+            yearly_data: {year, start_value, end_value, yearly_return_pct, spy_return_pct, 
+                         alpha, total_trades, win_rate, total_commission, total_realized_pnl, est_tax}
         """
         ws = self._get_worksheet(SHEET_YEARLY)
         
@@ -473,8 +563,105 @@ class SheetsManager:
             yearly_data.get("spy_return_pct", 0),
             yearly_data.get("alpha", 0),
             yearly_data.get("total_trades", 0),
-            yearly_data.get("win_rate", 0)
+            yearly_data.get("win_rate", 0),
+            yearly_data.get("total_commission", 0),
+            yearly_data.get("total_realized_pnl", 0),
+            yearly_data.get("est_tax", 0)
         ])
+        
+        print(f"Yearly value saved ({yearly_data.get('year', '')})")
+    
+    
+    def update_yearly_summary(self, exchange_rate=1400):
+        """
+        연간 리포트 자동 생성 (세금 계산 포함)
+        
+        Args:
+            exchange_rate: 원/달러 환율 (세금 계산용)
+        """
+        daily_df = self.load_daily_values()
+        trades_df = self.load_trades()
+        
+        if daily_df.empty:
+            print("No daily data for yearly summary")
+            return
+        
+        # 날짜 파싱
+        daily_df["Date"] = pd.to_datetime(daily_df["Date"])
+        daily_df["Year"] = daily_df["Date"].dt.year
+        
+        if not trades_df.empty:
+            trades_df["Date"] = pd.to_datetime(trades_df["Date"])
+            trades_df["Year"] = trades_df["Date"].dt.year
+        
+        # 기존 연간 데이터
+        existing_years = []
+        yearly_df = self.load_yearly_values()
+        if not yearly_df.empty:
+            existing_years = yearly_df["Year"].astype(str).tolist()
+        
+        # 연도별 집계
+        for year in daily_df["Year"].unique():
+            if str(year) in existing_years:
+                continue
+            
+            year_daily = daily_df[daily_df["Year"] == year].copy()
+            year_daily = year_daily.sort_values("Date")
+            
+            if len(year_daily) < 2:
+                continue
+            
+            # 수익률 계산
+            start_value = float(year_daily.iloc[0]["Total_Value"])
+            end_value = float(year_daily.iloc[-1]["Total_Value"])
+            yearly_return = (end_value - start_value) / start_value * 100 if start_value > 0 else 0
+            
+            # SPY 수익률
+            start_spy = float(year_daily.iloc[0]["SPY_Price"])
+            end_spy = float(year_daily.iloc[-1]["SPY_Price"])
+            spy_return = (end_spy - start_spy) / start_spy * 100 if start_spy > 0 else 0
+            
+            # 거래 집계
+            total_trades = 0
+            wins = 0
+            total_commission = 0
+            total_realized_pnl = 0
+            
+            if not trades_df.empty:
+                year_trades = trades_df[trades_df["Year"] == year]
+                total_trades = len(year_trades)
+                
+                try:
+                    returns = year_trades["Return%"].astype(float)
+                    wins = (returns > 0).sum()
+                    total_commission = year_trades["Commission"].astype(float).sum()
+                    total_realized_pnl = year_trades["Realized_PnL"].astype(float).sum()
+                except:
+                    pass
+            
+            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+            
+            # 세금 계산 (해외주식 양도소득세)
+            # 실현이익(원화) - 250만원 공제 후 22%
+            realized_pnl_krw = total_realized_pnl * exchange_rate
+            taxable_amount = max(0, realized_pnl_krw - TAX_EXEMPTION)
+            est_tax = round(taxable_amount * TAX_RATE)
+            
+            yearly_data = {
+                "year": year,
+                "start_value": round(start_value, 2),
+                "end_value": round(end_value, 2),
+                "yearly_return_pct": round(yearly_return, 2),
+                "spy_return_pct": round(spy_return, 2),
+                "alpha": round(yearly_return - spy_return, 2),
+                "total_trades": total_trades,
+                "win_rate": round(win_rate, 1),
+                "total_commission": round(total_commission, 2),
+                "total_realized_pnl": round(total_realized_pnl, 2),
+                "est_tax": est_tax
+            }
+            
+            self.save_yearly_value(yearly_data)
         
         print(f"Yearly value saved ({yearly_data.get('year', '')})")
     
@@ -504,7 +691,8 @@ class SheetsManager:
             metrics: {
                 initial_capital, current_value, total_return_pct, cagr,
                 spy_return_pct, alpha, mdd, sharpe_ratio, win_rate,
-                total_trades, start_date, days
+                total_trades, start_date, days,
+                total_commission, total_realized_pnl, est_tax
             }
         """
         ws = self._get_worksheet(SHEET_PERFORMANCE)
@@ -524,6 +712,12 @@ class SheetsManager:
             ["Total_Trades", metrics.get("total_trades", 0)],
             ["Start_Date", metrics.get("start_date", "")],
             ["Days", metrics.get("days", 0)],
+            ["", ""],  # 빈 줄
+            ["--- 비용/세금 ---", ""],
+            ["Total_Commission", f"${metrics.get('total_commission', 0):,.2f}"],
+            ["Total_Realized_PnL", f"${metrics.get('total_realized_pnl', 0):,.2f}"],
+            ["Est_Tax (KRW)", f"₩{metrics.get('est_tax', 0):,.0f}"],
+            ["", ""],
             ["Last_Updated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
         ]
         
