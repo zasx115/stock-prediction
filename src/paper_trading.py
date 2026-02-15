@@ -19,6 +19,7 @@ from config import (
     LOOKBACK_DAYS,
     SP500_BACKUP
 )
+from data import get_sp500_list
 from strategy import CustomStrategy, prepare_price_data, filter_tuesday
 from sheets import SheetsManager
 from telegram import (
@@ -34,28 +35,6 @@ from telegram import (
 # ============================================
 # Data Functions (yfinance 사용)
 # ============================================
-
-def get_sp500_list():
-    """
-    S&P 500 종목 리스트 가져오기
-    """
-    try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
-        df = tables[0]
-        df = df[["Symbol", "Security", "GICS Sector"]].copy()
-        df.columns = ["symbol", "company", "sector"]
-        df["symbol"] = df["symbol"].str.replace(".", "-", regex=False)
-        print(f"Loaded {len(df)} symbols from Wikipedia")
-        return df
-    except Exception as e:
-        print(f"Wikipedia failed: {e}")
-        print(f"Using backup list ({len(SP500_BACKUP)} symbols)")
-        return pd.DataFrame({
-            "symbol": SP500_BACKUP,
-            "company": "",
-            "sector": ""
-        })
 
 
 def download_recent_data(symbols, days=LOOKBACK_DAYS):
