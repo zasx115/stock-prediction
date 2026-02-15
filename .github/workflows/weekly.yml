@@ -70,6 +70,9 @@ jobs:
           
           # Google Sheets
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          
+          # Python Path
+          PYTHONPATH: ${{ github.workspace }}/src
         run: |
           cd src
           python -c "from paper_trading import run_weekly; run_weekly()"
