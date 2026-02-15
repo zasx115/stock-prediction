@@ -70,8 +70,7 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           
           # Python Path
-          PYTHONPATH: ${{ github.workspace }}:
-                      ${{ github.workspace }}/src
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           cd src
           python -c "from paper_trading import run_daily; run_daily()"
