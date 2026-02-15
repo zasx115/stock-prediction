@@ -368,9 +368,13 @@ def record_daily_value(sheets):
     return daily_data, portfolio
 
 
-def update_performance(sheets):
+def update_performance(sheets, exchange_rate=1400):
     """
-    전체 성과 업데이트
+    전체 성과 업데이트 (수수료/세금 포함)
+    
+    Args:
+        sheets: SheetsManager 인스턴스
+        exchange_rate: 원/달러 환율 (세금 계산용)
     """
     portfolio = get_portfolio_from_sheets(sheets)
     trades_df = sheets.load_trades()
@@ -413,14 +417,25 @@ def update_performance(sheets):
         except:
             pass
     
-    # 승률
+    # 승률 및 수수료/실현손익
     win_rate = 0
     total_trades = len(trades_df)
+    total_commission = 0
+    total_realized_pnl = 0
+    
     if total_trades > 0:
         try:
             returns = trades_df["Return%"].astype(float)
             wins = (returns > 0).sum()
             win_rate = wins / total_trades * 100
+            
+            # 수수료 합계
+            if "Commission" in trades_df.columns:
+                total_commission = trades_df["Commission"].astype(float).sum()
+            
+            # 실현손익 합계
+            if "Realized_PnL" in trades_df.columns:
+                total_realized_pnl = trades_df["Realized_PnL"].astype(float).sum()
         except:
             pass
     
@@ -434,6 +449,11 @@ def update_performance(sheets):
         except:
             pass
     
+    # 세금 계산 (해외주식 양도소득세: 22%, 250만원 공제)
+    realized_pnl_krw = total_realized_pnl * exchange_rate
+    taxable_amount = max(0, realized_pnl_krw - 2500000)
+    est_tax = round(taxable_amount * 0.22)
+    
     metrics = {
         "initial_capital": INITIAL_CAPITAL,
         "current_value": total_value,
@@ -446,10 +466,17 @@ def update_performance(sheets):
         "win_rate": win_rate,
         "total_trades": total_trades,
         "start_date": start_date,
-        "days": days
+        "days": days,
+        "total_commission": round(total_commission, 2),
+        "total_realized_pnl": round(total_realized_pnl, 2),
+        "est_tax": est_tax
     }
     
     sheets.save_performance(metrics)
+    
+    # 월간/연간 리포트 자동 업데이트
+    sheets.update_monthly_summary()
+    sheets.update_yearly_summary(exchange_rate)
     
     print("=" * 60)
     print("Performance Updated")
@@ -459,6 +486,9 @@ def update_performance(sheets):
     print(f"Alpha: {total_return - spy_return:+.2f}%")
     print(f"MDD: {mdd:.2f}%")
     print(f"Win Rate: {win_rate:.1f}%")
+    print(f"Total Commission: ${total_commission:,.2f}")
+    print(f"Total Realized P&L: ${total_realized_pnl:,.2f}")
+    print(f"Est. Tax (KRW): ₩{est_tax:,.0f}")
     print("=" * 60)
     
     return metrics
