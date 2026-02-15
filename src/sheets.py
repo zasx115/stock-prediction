@@ -20,7 +20,7 @@ SPREADSHEET_NAME = "Stock_Paper_Trading"
 SERVICE_ACCOUNT_FILE = "service_account.json"
 
 # Sheet Names
-SHEET_PORTFOLIO = "Portfolio"
+SHEET_HOLDINGS = "Holdings"
 SHEET_TRADES = "Trades"
 SHEET_SIGNALS = "Signals"
 SHEET_DAILY = "Daily_Value"
@@ -35,8 +35,8 @@ SCOPES = [
 
 # Headers
 HEADERS = {
-    SHEET_PORTFOLIO: ["Symbol", "Shares", "Avg_Price", "Sector", "Buy_Date", "Current_Price", "Return%", "Value"],
-    SHEET_TRADES: ["Date", "Symbol", "Action", "Shares", "Price", "Amount", "Commission", "Slippage", "Return%", "Sector", "Score", "Memo"],
+    SHEET_HOLDINGS: ["Symbol", "Shares", "Avg_Price", "Sector", "Buy_Date"],
+    SHEET_TRADES: ["Date", "Symbol", "Action", "Shares", "Price", "Amount", "Return%", "Sector", "Memo"],
     SHEET_SIGNALS: ["Timestamp", "Analysis_Date", "Signal", "Picks", "Scores", "Allocations", "Market_Momentum", "SPY_Price", "Market_Trend"],
     SHEET_DAILY: ["Date", "Total_Value", "Cash", "Stocks_Value", "Daily_Return%", "SPY_Price", "SPY_Return%", "Alpha"],
     SHEET_MONTHLY: ["Year_Month", "Start_Value", "End_Value", "Monthly_Return%", "SPY_Return%", "Alpha", "Best_Stock", "Worst_Stock"],
@@ -152,97 +152,106 @@ class SheetsManager:
     
     
     # ============================================
-    # Portfolio
+    # Holdings (수동 입력 시트)
     # ============================================
     
-    def save_portfolio(self, portfolio, current_prices=None):
+    def load_holdings(self):
         """
-        Save portfolio to sheet
+        Holdings 시트에서 보유 종목 로드
+        (수동으로 입력한 데이터)
         
-        Args:
-            portfolio: {"cash": float, "holdings": {symbol: {"shares": int, "avg_price": float, "sector": str, "buy_date": str}}}
-            current_prices: {symbol: float} - optional current prices
+        Returns:
+            DataFrame: Symbol, Shares, Avg_Price, Sector, Buy_Date
         """
-        ws = self._get_worksheet(SHEET_PORTFOLIO)
-        ws.clear()
-        
-        # Header
-        data = [HEADERS[SHEET_PORTFOLIO]]
-        
-        # Meta info row
-        data.append(["_CASH", portfolio.get("cash", 0), "", "", portfolio.get("created_at", ""), "", "", ""])
-        
-        # Holdings
-        for symbol, info in portfolio.get("holdings", {}).items():
-            shares = info.get("shares", 0)
-            avg_price = info.get("avg_price", 0)
-            sector = info.get("sector", "")
-            buy_date = info.get("buy_date", "")
-            
-            # Current price
-            current_price = 0
-            if current_prices and symbol in current_prices:
-                current_price = current_prices[symbol]
-            
-            # Calculate return and value
-            return_pct = 0
-            value = 0
-            if avg_price > 0 and current_price > 0:
-                return_pct = round((current_price - avg_price) / avg_price * 100, 2)
-                value = round(shares * current_price, 2)
-            
-            data.append([symbol, shares, avg_price, sector, buy_date, current_price, return_pct, value])
-        
-        ws.update(f"A1:H{len(data)}", data)
-        print(f"Portfolio saved ({len(portfolio.get('holdings', {}))} holdings)")
-    
-    
-    def load_portfolio(self, initial_capital=2000):
-        """Load portfolio from sheet"""
-        ws = self._get_worksheet(SHEET_PORTFOLIO)
+        ws = self._get_worksheet(SHEET_HOLDINGS)
         data = ws.get_all_values()
         
-        portfolio = {
-            "cash": initial_capital,
-            "holdings": {},
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+        if len(data) <= 1:
+            return pd.DataFrame(columns=HEADERS[SHEET_HOLDINGS])
+        
+        df = pd.DataFrame(data[1:], columns=data[0])
+        
+        # 빈 행 제거
+        df = df[df["Symbol"].str.strip() != ""]
+        
+        print(f"Holdings loaded ({len(df)} stocks)")
+        return df
+    
+    
+    def save_holding(self, holding_data):
+        """
+        단일 보유 종목 추가
+        
+        Args:
+            holding_data: {symbol, shares, avg_price, sector, buy_date}
+        """
+        ws = self._get_worksheet(SHEET_HOLDINGS)
+        
+        # Check header
+        existing = ws.get_all_values()
+        if len(existing) == 0:
+            ws.append_row(HEADERS[SHEET_HOLDINGS])
+        
+        ws.append_row([
+            holding_data.get("symbol", ""),
+            holding_data.get("shares", 0),
+            holding_data.get("avg_price", 0),
+            holding_data.get("sector", ""),
+            holding_data.get("buy_date", "")
+        ])
+        
+        print(f"Holding saved: {holding_data.get('symbol', '')}")
+    
+    
+    def remove_holding(self, symbol):
+        """
+        보유 종목 제거 (매도 시)
+        
+        Args:
+            symbol: 종목 코드
+        """
+        ws = self._get_worksheet(SHEET_HOLDINGS)
+        data = ws.get_all_values()
         
         if len(data) <= 1:
-            self.save_portfolio(portfolio)
-            return portfolio
+            return
         
-        # Parse data (skip header)
-        for row in data[1:]:
-            if len(row) < 3:
-                continue
-            
-            symbol = row[0]
-            
-            # Meta row (_CASH)
-            if symbol == "_CASH":
-                try:
-                    portfolio["cash"] = float(row[1])
-                    portfolio["created_at"] = row[4] if len(row) > 4 else ""
-                except:
-                    pass
-                continue
-            
-            # Holdings
-            if symbol and symbol != "Symbol":
-                try:
-                    portfolio["holdings"][symbol] = {
-                        "shares": int(float(row[1])),
-                        "avg_price": float(row[2]),
-                        "sector": row[3] if len(row) > 3 else "",
-                        "buy_date": row[4] if len(row) > 4 else ""
-                    }
-                except:
-                    pass
+        # 해당 종목 찾기
+        for i, row in enumerate(data):
+            if row[0] == symbol:
+                ws.delete_rows(i + 1)  # 1-indexed
+                print(f"Holding removed: {symbol}")
+                return
         
-        print(f"Portfolio loaded ({len(portfolio['holdings'])} holdings)")
-        return portfolio
+        print(f"Holding not found: {symbol}")
+    
+    
+    def update_holding(self, symbol, shares=None, avg_price=None):
+        """
+        보유 종목 수량/가격 업데이트
+        
+        Args:
+            symbol: 종목 코드
+            shares: 새 수량 (None이면 변경 안 함)
+            avg_price: 새 평균 단가 (None이면 변경 안 함)
+        """
+        ws = self._get_worksheet(SHEET_HOLDINGS)
+        data = ws.get_all_values()
+        
+        if len(data) <= 1:
+            return
+        
+        # 해당 종목 찾기
+        for i, row in enumerate(data):
+            if row[0] == symbol:
+                if shares is not None:
+                    ws.update_cell(i + 1, 2, shares)  # B열
+                if avg_price is not None:
+                    ws.update_cell(i + 1, 3, avg_price)  # C열
+                print(f"Holding updated: {symbol}")
+                return
+        
+        print(f"Holding not found: {symbol}")
     
     
     # ============================================
@@ -254,7 +263,7 @@ class SheetsManager:
         Append trades to sheet
         
         Args:
-            trades: list of {date, symbol, action, shares, price, amount, commission, slippage, return_pct, sector, score, memo}
+            trades: list of {date, symbol, action, shares, price, amount, return_pct, sector, memo}
         """
         if not trades:
             return
@@ -275,11 +284,8 @@ class SheetsManager:
                 t.get("shares", 0),
                 t.get("price", 0),
                 t.get("amount", 0),
-                t.get("commission", 0),
-                t.get("slippage", 0),
                 t.get("return_pct", 0),
                 t.get("sector", ""),
-                t.get("score", ""),
                 t.get("memo", "")
             ])
         
@@ -580,9 +586,9 @@ class SheetsManager:
         print(f"URL: {self.spreadsheet.url}")
         print()
         
-        # Portfolio
-        portfolio = self.load_portfolio()
-        print(f"Portfolio: ${portfolio['cash']:,.2f} cash, {len(portfolio['holdings'])} holdings")
+        # Holdings
+        holdings_df = self.load_holdings()
+        print(f"Holdings: {len(holdings_df)} stocks")
         
         # Trades
         trades_df = self.load_trades()
