@@ -586,10 +586,14 @@ def run_weekly(sheets=None):
     print("=" * 60)
     
     try:
+        # 먼저 현재 포트폴리오 가치 확인
+        portfolio = get_portfolio_from_sheets(sheets)
+        total_capital = portfolio["total_value"]
+        
         # 신호 생성
         signal = get_today_signal()
         sheets.save_signal(signal)
-        send_signal(signal)
+        send_signal(signal, total_capital)  # 현재 자본금 전달
         
         # 매매 안내 메시지
         if signal["signal"] == "BUY":
@@ -634,9 +638,11 @@ if __name__ == "__main__":
     sheets = SheetsManager()
     
     if cmd == "signal":
+        portfolio = get_portfolio_from_sheets(sheets)
+        total_capital = portfolio["total_value"]
         signal = get_today_signal()
         sheets.save_signal(signal)
-        send_signal(signal)
+        send_signal(signal, total_capital)
     
     elif cmd == "portfolio":
         print_portfolio(sheets)
