@@ -9,6 +9,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import pandas as pd
+import numpy as np
 import os
 import json
 
@@ -50,6 +51,28 @@ COMMISSION_RATE = 0.001
 # 해외주식 양도소득세 (22% - 기본공제 250만원)
 TAX_RATE = 0.22
 TAX_EXEMPTION = 2500000  # 원
+
+
+# ============================================
+# Utility: numpy/pandas → Python 타입 변환
+# ============================================
+
+def to_python(val):
+    """
+    numpy/pandas 타입을 Python 기본 타입으로 변환
+    Google Sheets API는 JSON 직렬화가 필요하므로 numpy 타입 사용 불가
+    """
+    if val is None:
+        return ""
+    if isinstance(val, (np.integer, np.int64, np.int32)):
+        return int(val)
+    if isinstance(val, (np.floating, np.float64, np.float32)):
+        return float(val)
+    if isinstance(val, np.ndarray):
+        return val.tolist()
+    if hasattr(val, 'item'):
+        return val.item()
+    return val
 
 
 # ============================================
@@ -200,11 +223,11 @@ class SheetsManager:
             ws.append_row(HEADERS[SHEET_HOLDINGS])
         
         ws.append_row([
-            holding_data.get("symbol", ""),
-            holding_data.get("shares", 0),
-            holding_data.get("avg_price", 0),
-            holding_data.get("sector", ""),
-            holding_data.get("buy_date", "")
+            str(holding_data.get("symbol", "")),
+            to_python(holding_data.get("shares", 0)),
+            to_python(holding_data.get("avg_price", 0)),
+            str(holding_data.get("sector", "")),
+            str(holding_data.get("buy_date", ""))
         ])
         
         print(f"Holding saved: {holding_data.get('symbol', '')}")
@@ -284,21 +307,21 @@ class SheetsManager:
         
         # Append trades
         for t in trades:
-            amount = t.get("amount", 0)
+            amount = to_python(t.get("amount", 0))
             commission = round(amount * COMMISSION_RATE, 2)  # 0.1% 수수료
             
             ws.append_row([
-                t.get("date", ""),
-                t.get("symbol", ""),
-                t.get("action", ""),
-                t.get("shares", 0),
-                t.get("price", 0),
+                str(t.get("date", "")),
+                str(t.get("symbol", "")),
+                str(t.get("action", "")),
+                to_python(t.get("shares", 0)),
+                to_python(t.get("price", 0)),
                 amount,
                 commission,
-                t.get("return_pct", 0),
-                t.get("realized_pnl", 0),
-                t.get("sector", ""),
-                t.get("memo", "")
+                to_python(t.get("return_pct", 0)),
+                to_python(t.get("realized_pnl", 0)),
+                str(t.get("sector", "")),
+                str(t.get("memo", ""))
             ])
         
         print(f"Trades saved ({len(trades)} rows)")
@@ -341,25 +364,24 @@ class SheetsManager:
         else:
             date_str = str(signal.get("date", ""))
         
-        # numpy 타입 → Python 타입 변환
-        market_momentum = signal.get("market_momentum", 0)
-        spy_price = signal.get("spy_price", 0)
+        # scores 변환
+        scores = signal.get("scores", [])
+        scores_str = ", ".join([f"{to_python(s):.4f}" for s in scores])
         
-        if hasattr(market_momentum, 'item'):
-            market_momentum = market_momentum.item()
-        if hasattr(spy_price, 'item'):
-            spy_price = spy_price.item()
+        # allocations 변환
+        allocations = signal.get("allocations", [])
+        alloc_str = ", ".join([f"{to_python(a)*100:.0f}%" for a in allocations])
         
         ws.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             date_str,
-            signal.get("signal", ""),
+            str(signal.get("signal", "")),
             ", ".join(signal.get("picks", [])),
-            ", ".join([f"{s:.4f}" for s in signal.get("scores", [])]),
-            ", ".join([f"{a:.0%}" for a in signal.get("allocations", [])]),
-            float(market_momentum) if market_momentum else 0,
-            float(spy_price) if spy_price else 0,
-            signal.get("market_trend", "")
+            scores_str,
+            alloc_str,
+            to_python(signal.get("market_momentum", 0)),
+            to_python(signal.get("spy_price", 0)),
+            str(signal.get("market_trend", ""))
         ])
         
         print(f"Signal saved ({signal.get('signal', '')})")
@@ -396,14 +418,8 @@ class SheetsManager:
         if len(existing) == 0:
             ws.append_row(HEADERS[SHEET_DAILY])
         
-        # numpy 타입 → Python 타입 변환 함수
-        def to_python(val):
-            if hasattr(val, 'item'):
-                return val.item()
-            return float(val) if val else 0
-        
         ws.append_row([
-            daily_data.get("date", ""),
+            str(daily_data.get("date", "")),
             to_python(daily_data.get("total_value", 0)),
             to_python(daily_data.get("cash", 0)),
             to_python(daily_data.get("stocks_value", 0)),
@@ -449,15 +465,15 @@ class SheetsManager:
             ws.append_row(HEADERS[SHEET_MONTHLY])
         
         ws.append_row([
-            monthly_data.get("year_month", ""),
-            monthly_data.get("start_value", 0),
-            monthly_data.get("end_value", 0),
-            monthly_data.get("monthly_return_pct", 0),
-            monthly_data.get("spy_return_pct", 0),
-            monthly_data.get("alpha", 0),
-            monthly_data.get("trades", 0),
-            monthly_data.get("commission", 0),
-            monthly_data.get("realized_pnl", 0)
+            str(monthly_data.get("year_month", "")),
+            to_python(monthly_data.get("start_value", 0)),
+            to_python(monthly_data.get("end_value", 0)),
+            to_python(monthly_data.get("monthly_return_pct", 0)),
+            to_python(monthly_data.get("spy_return_pct", 0)),
+            to_python(monthly_data.get("alpha", 0)),
+            to_python(monthly_data.get("trades", 0)),
+            to_python(monthly_data.get("commission", 0)),
+            to_python(monthly_data.get("realized_pnl", 0))
         ])
         
         print(f"Monthly value saved ({monthly_data.get('year_month', '')})")
@@ -571,17 +587,17 @@ class SheetsManager:
             ws.append_row(HEADERS[SHEET_YEARLY])
         
         ws.append_row([
-            yearly_data.get("year", ""),
-            yearly_data.get("start_value", 0),
-            yearly_data.get("end_value", 0),
-            yearly_data.get("yearly_return_pct", 0),
-            yearly_data.get("spy_return_pct", 0),
-            yearly_data.get("alpha", 0),
-            yearly_data.get("total_trades", 0),
-            yearly_data.get("win_rate", 0),
-            yearly_data.get("total_commission", 0),
-            yearly_data.get("total_realized_pnl", 0),
-            yearly_data.get("est_tax", 0)
+            to_python(yearly_data.get("year", "")),
+            to_python(yearly_data.get("start_value", 0)),
+            to_python(yearly_data.get("end_value", 0)),
+            to_python(yearly_data.get("yearly_return_pct", 0)),
+            to_python(yearly_data.get("spy_return_pct", 0)),
+            to_python(yearly_data.get("alpha", 0)),
+            to_python(yearly_data.get("total_trades", 0)),
+            to_python(yearly_data.get("win_rate", 0)),
+            to_python(yearly_data.get("total_commission", 0)),
+            to_python(yearly_data.get("total_realized_pnl", 0)),
+            to_python(yearly_data.get("est_tax", 0))
         ])
         
         print(f"Yearly value saved ({yearly_data.get('year', '')})")
