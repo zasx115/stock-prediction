@@ -13,7 +13,7 @@ from datetime import datetime
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-INITIAL_CAPITAL = 2000
+INITIAL_CAPITAL = 3000
 
 # ============================================
 # Send Message
