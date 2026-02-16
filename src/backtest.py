@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 # ============================================
 
 # ----- 자본금 설정 -----
-INITIAL_CAPITAL = 3000       # 초기 자본금 ($2000)
+INITIAL_CAPITAL = 2000       # 초기 자본금 ($2000)
 
 # ----- 거래 비용 -----
 BUY_COMMISSION = 0.0025      # 매수 수수료 (0.25%)
@@ -279,7 +279,7 @@ def create_trade_mapping(df):
 # [5] 백테스트 메인 함수
 # ============================================
 
-def run_backtest(df):
+def run_backtest(df=None):
     """
     백테스트를 실행합니다.
     
@@ -290,6 +290,7 @@ def run_backtest(df):
     
     Args:
         df: 원본 데이터프레임 (date, symbol, close, sector 컬럼)
+            None이면 data.py의 get_backtest_data() 자동 호출
     
     Returns:
         dict: {
@@ -298,6 +299,11 @@ def run_backtest(df):
             'metrics': 성과 지표
         }
     """
+    
+    # ===== 데이터 자동 로딩 =====
+    if df is None:
+        from data import get_backtest_data
+        df = get_backtest_data()
     
     # ===== 초기 설정 출력 =====
     print("=" * 60)
