@@ -13,7 +13,7 @@ from datetime import datetime
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-INITIAL_CAPITAL = 3000
+INITIAL_CAPITAL = 2000
 
 # ============================================
 # Send Message
@@ -52,23 +52,31 @@ def send_message(text, parse_mode="HTML"):
 # Message Templates
 # ============================================
 
-def send_signal(signal):
+def send_signal(signal, total_capital=None):
     """
     매매 신호 메시지
+    
+    Args:
+        signal: 신호 정보
+        total_capital: 현재 총 자본금 (None이면 INITIAL_CAPITAL 사용)
     """
     today = datetime.now().strftime("%Y-%m-%d")
+    
+    # 현재 자본금 (전달받지 못하면 초기 자본금 사용)
+    capital = total_capital if total_capital else INITIAL_CAPITAL
     
     if signal["signal"] == "BUY":
         # 종목별 정보
         picks_text = ""
         for i, (symbol, score, alloc) in enumerate(zip(signal["picks"], signal["scores"], signal["allocations"])):
             price = signal.get("prices", {}).get(symbol, 0)
-            # 투자금액 계산 (INITIAL_CAPITAL 기준)
-            invest_amount = INITIAL_CAPITAL * alloc
+            # 투자금액 계산 (현재 자본금 기준)
+            invest_amount = capital * alloc
             shares = int(invest_amount / price) if price > 0 else 0
             picks_text += f"{i+1}. {symbol} ({score:.4f}) ({alloc*100:.0f}%) - ${price:.2f} ({shares}주)\n"
         
         text = f"""<b>BUY Signal ({today})</b>
+Capital: ${capital:,.2f}
 Market: UP (Momentum: {signal.get("market_momentum", 0):.4f})
 SPY: ${signal.get("spy_price", 0):.2f}
 
