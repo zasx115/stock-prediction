@@ -126,7 +126,7 @@ STOP_LOSS = -0.07
 # ============================================
 
 # 초기 투자금 (USD)
-INITIAL_CAPITAL = 3000
+INITIAL_CAPITAL = 2000
 
 # 수수료율
 BUY_COMMISSION = 0.0025
