@@ -715,7 +715,8 @@ def run_backtest(df=None):
     return {
         'portfolio': portfolio_df,
         'trades': trades_df,
-        'metrics': metrics
+        'metrics': metrics,
+        'df': df
     }
 
 
