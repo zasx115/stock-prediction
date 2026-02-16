@@ -34,21 +34,45 @@ def get_sp500_list():
         sp500 = get_sp500_list()
         symbols = sp500['symbol'].tolist()  # ['AAPL', 'MSFT', ...]
     """
-    # 위키피디아 S&P 500 페이지에서 테이블 읽기
+    import requests
+    from io import StringIO
+    
     url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-    tables = pd.read_html(url)
     
-    # 첫 번째 테이블이 종목 리스트
-    df = tables[0]
+    # User-Agent 추가 (403 에러 방지)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
-    # 필요한 컬럼만 선택 및 이름 변경
-    df = df[['Symbol', 'Security', 'GICS Sector']].copy()
-    df.columns = ['symbol', 'company', 'sector']
-    
-    # 티커 정리 (BRK.B → BRK-B 형식으로 변환, yfinance 호환)
-    df['symbol'] = df['symbol'].str.replace('.', '-', regex=False)
-    
-    return df
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
+        
+        # 첫 번째 테이블이 종목 리스트
+        df = tables[0]
+        
+        # 필요한 컬럼만 선택 및 이름 변경
+        df = df[['Symbol', 'Security', 'GICS Sector']].copy()
+        df.columns = ['symbol', 'company', 'sector']
+        
+        # 티커 정리 (BRK.B → BRK-B 형식으로 변환, yfinance 호환)
+        df['symbol'] = df['symbol'].str.replace('.', '-', regex=False)
+        
+        print(f"✅ S&P 500 종목 로드: {len(df)}개")
+        return df
+        
+    except Exception as e:
+        print(f"⚠️ 위키피디아 실패: {e}")
+        print("→ 백업 리스트 사용")
+        
+        # 백업 리스트 사용
+        from config import SP500_BACKUP
+        return pd.DataFrame({
+            'symbol': SP500_BACKUP,
+            'company': '',
+            'sector': ''
+        })
 
 
 # ============================================
