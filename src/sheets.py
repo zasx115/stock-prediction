@@ -505,6 +505,7 @@ class SheetsManager:
             existing_months = monthly_df["Year_Month"].tolist()
         
         # 월별 집계
+        saved_count = 0
         for ym in daily_df["Year_Month"].unique():
             if ym in existing_months:
                 continue
@@ -552,6 +553,12 @@ class SheetsManager:
             }
             
             self.save_monthly_value(monthly_data)
+            saved_count += 1
+        
+        if saved_count > 0:
+            print(f"Monthly summary updated ({saved_count} months)")
+        else:
+            print("No new monthly data to save")
     
     
     def load_monthly_values(self):
@@ -632,6 +639,7 @@ class SheetsManager:
             existing_years = yearly_df["Year"].astype(str).tolist()
         
         # 연도별 집계
+        saved_count = 0
         for year in daily_df["Year"].unique():
             if str(year) in existing_years:
                 continue
@@ -693,8 +701,12 @@ class SheetsManager:
             }
             
             self.save_yearly_value(yearly_data)
+            saved_count += 1
         
-        print(f"Yearly value saved ({yearly_data.get('year', '')})")
+        if saved_count > 0:
+            print(f"Yearly summary updated ({saved_count} years)")
+        else:
+            print("No new yearly data to save")
     
     
     def load_yearly_values(self):
