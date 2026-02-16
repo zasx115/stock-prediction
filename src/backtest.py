@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 # ============================================
 
 # ----- 자본금 설정 -----
-INITIAL_CAPITAL = 2000       # 초기 자본금 ($2000)
+INITIAL_CAPITAL = 3000       # 초기 자본금 ($2000)
 
 # ----- 거래 비용 -----
 BUY_COMMISSION = 0.0025      # 매수 수수료 (0.25%)
