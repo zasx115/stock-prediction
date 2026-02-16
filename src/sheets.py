@@ -341,6 +341,15 @@ class SheetsManager:
         else:
             date_str = str(signal.get("date", ""))
         
+        # numpy 타입 → Python 타입 변환
+        market_momentum = signal.get("market_momentum", 0)
+        spy_price = signal.get("spy_price", 0)
+        
+        if hasattr(market_momentum, 'item'):
+            market_momentum = market_momentum.item()
+        if hasattr(spy_price, 'item'):
+            spy_price = spy_price.item()
+        
         ws.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             date_str,
@@ -348,8 +357,8 @@ class SheetsManager:
             ", ".join(signal.get("picks", [])),
             ", ".join([f"{s:.4f}" for s in signal.get("scores", [])]),
             ", ".join([f"{a:.0%}" for a in signal.get("allocations", [])]),
-            signal.get("market_momentum", ""),
-            signal.get("spy_price", ""),
+            float(market_momentum) if market_momentum else 0,
+            float(spy_price) if spy_price else 0,
             signal.get("market_trend", "")
         ])
         
@@ -387,15 +396,21 @@ class SheetsManager:
         if len(existing) == 0:
             ws.append_row(HEADERS[SHEET_DAILY])
         
+        # numpy 타입 → Python 타입 변환 함수
+        def to_python(val):
+            if hasattr(val, 'item'):
+                return val.item()
+            return float(val) if val else 0
+        
         ws.append_row([
             daily_data.get("date", ""),
-            daily_data.get("total_value", 0),
-            daily_data.get("cash", 0),
-            daily_data.get("stocks_value", 0),
-            daily_data.get("daily_return_pct", 0),
-            daily_data.get("spy_price", 0),
-            daily_data.get("spy_return_pct", 0),
-            daily_data.get("alpha", 0)
+            to_python(daily_data.get("total_value", 0)),
+            to_python(daily_data.get("cash", 0)),
+            to_python(daily_data.get("stocks_value", 0)),
+            to_python(daily_data.get("daily_return_pct", 0)),
+            to_python(daily_data.get("spy_price", 0)),
+            to_python(daily_data.get("spy_return_pct", 0)),
+            to_python(daily_data.get("alpha", 0))
         ])
         
         print(f"Daily value saved ({daily_data.get('date', '')})")
