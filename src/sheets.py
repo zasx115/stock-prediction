@@ -46,7 +46,8 @@ HEADERS = {
 }
 
 # 수수료율 (0.1%)
-COMMISSION_RATE = 0.001
+from config import BUY_COMMISSION
+COMMISSION_RATE = BUY_COMMISSION
 
 # 해외주식 양도소득세 (22% - 기본공제 250만원)
 TAX_RATE = 0.22
