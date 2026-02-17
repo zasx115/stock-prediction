@@ -228,13 +228,16 @@ def get_today_signal(strategy=None):
 # Portfolio Management (시트 기반)
 # ============================================
 
-def get_portfolio_from_sheets(sheets):
+def get_portfolio_from_sheets(sheets, sync_result=None):
     """
     구글시트에서 포트폴리오 정보 가져오기
+    
+    Args:
+        sheets: SheetsManager 인스턴스
+        sync_result: sync_holdings_from_trades() 결과 (있으면 cash 사용)
     """
     try:
         holdings_df = sheets.load_holdings()
-        daily_df = sheets.load_daily_values()
         
         holdings = []
         if not holdings_df.empty:
@@ -258,13 +261,17 @@ def get_portfolio_from_sheets(sheets):
                 h["profit_loss"] = (h["current_price"] - h["avg_price"]) * h["shares"]
                 h["profit_loss_pct"] = ((h["current_price"] / h["avg_price"]) - 1) * 100 if h["avg_price"] > 0 else 0
         
-        # 현금 및 총자산
-        cash = INITIAL_CAPITAL
-        if not daily_df.empty:
-            try:
-                cash = float(daily_df.iloc[-1].get("Cash", INITIAL_CAPITAL))
-            except:
-                pass
+        # 현금: sync_result에서 가져오거나 Daily_Value에서 가져옴
+        if sync_result and "cash" in sync_result:
+            cash = sync_result["cash"]
+        else:
+            daily_df = sheets.load_daily_values()
+            cash = INITIAL_CAPITAL
+            if not daily_df.empty:
+                try:
+                    cash = float(daily_df.iloc[-1].get("Cash", INITIAL_CAPITAL))
+                except:
+                    pass
         
         stocks_value = sum(h["value"] for h in holdings)
         total_value = cash + stocks_value
@@ -327,11 +334,15 @@ def check_stop_loss(sheets):
 # Daily Update
 # ============================================
 
-def record_daily_value(sheets):
+def record_daily_value(sheets, sync_result=None):
     """
     일일 포트폴리오 가치 기록
+    
+    Args:
+        sheets: SheetsManager 인스턴스
+        sync_result: sync_holdings_from_trades() 결과 (있으면 cash 사용)
     """
-    portfolio = get_portfolio_from_sheets(sheets)
+    portfolio = get_portfolio_from_sheets(sheets, sync_result)
     spy_price = get_spy_price()
     
     # 이전 기록 조회
@@ -533,6 +544,7 @@ def print_portfolio(sheets):
 def run_daily(sheets=None):
     """
     일일 루틴 (월, 수, 목, 금)
+    - Holdings 동기화 (Trades 기반)
     - 손절 체크 (알림)
     - 일일 가치 기록
     - 성과 업데이트
@@ -545,11 +557,14 @@ def run_daily(sheets=None):
     print("=" * 60)
     
     try:
+        # Holdings 동기화 (Trades 기반) + Cash 계산
+        sync_result = sheets.sync_holdings_from_trades()
+        
         # 손절 체크 (알림만)
         stop_alerts = check_stop_loss(sheets)
         
-        # 일일 가치 기록
-        daily_data, portfolio = record_daily_value(sheets)
+        # 일일 가치 기록 (sync_result의 cash 사용)
+        daily_data, portfolio = record_daily_value(sheets, sync_result)
         
         # 성과 업데이트
         update_performance(sheets)
@@ -572,6 +587,7 @@ def run_daily(sheets=None):
 def run_weekly(sheets=None):
     """
     주간 루틴 (화요일)
+    - Holdings 동기화 (Trades 기반)
     - 신호 생성
     - 텔레그램 알림 (수동 매매 안내)
     - 손절 체크
@@ -586,8 +602,11 @@ def run_weekly(sheets=None):
     print("=" * 60)
     
     try:
-        # 먼저 현재 포트폴리오 가치 확인
-        portfolio = get_portfolio_from_sheets(sheets)
+        # Holdings 동기화 (Trades 기반) + Cash 계산
+        sync_result = sheets.sync_holdings_from_trades()
+        
+        # 현재 포트폴리오 가치 확인 (sync_result의 cash 사용)
+        portfolio = get_portfolio_from_sheets(sheets, sync_result)
         total_capital = portfolio["total_value"]
         
         # 신호 생성
@@ -602,8 +621,8 @@ def run_weekly(sheets=None):
         # 손절 체크 (알림만)
         stop_alerts = check_stop_loss(sheets)
         
-        # 일일 가치 기록
-        daily_data, portfolio = record_daily_value(sheets)
+        # 일일 가치 기록 (sync_result의 cash 사용)
+        daily_data, portfolio = record_daily_value(sheets, sync_result)
         
         # 성과 업데이트
         update_performance(sheets)
