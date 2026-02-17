@@ -284,6 +284,113 @@ class SheetsManager:
         print(f"Holding not found: {symbol}")
     
     
+    def sync_holdings_from_trades(self, initial_capital=None):
+        """
+        Trades 시트 기반으로 Holdings 시트 자동 동기화 + Cash 계산
+        
+        로직:
+        - BUY: 보유 추가, Cash 차감
+        - SELL/STOP_LOSS: 보유 차감, Cash 증가
+        
+        Args:
+            initial_capital: 초기 자본금 (None이면 config에서 가져옴)
+        
+        Returns:
+            dict: {holdings: {...}, cash: float}
+        """
+        # 초기 자본금
+        if initial_capital is None:
+            try:
+                from config import INITIAL_CAPITAL
+                initial_capital = INITIAL_CAPITAL
+            except:
+                initial_capital = 3000
+        
+        trades_df = self.load_trades()
+        
+        if trades_df.empty:
+            print("No trades to sync")
+            return {"holdings": {}, "cash": initial_capital}
+        
+        # 보유 종목 및 현금 계산
+        holdings = {}
+        cash = initial_capital
+        
+        for _, row in trades_df.iterrows():
+            symbol = row.get("Symbol", "")
+            action = row.get("Action", "").upper()
+            
+            try:
+                shares = int(float(row.get("Shares", 0)))
+                price = float(row.get("Price", 0))
+            except:
+                continue
+            
+            if not symbol or shares <= 0:
+                continue
+            
+            # 금액 계산
+            amount = shares * price
+            commission = amount * COMMISSION_RATE
+            
+            sector = row.get("Sector", "")
+            date = row.get("Date", "")
+            
+            if action == "BUY":
+                # 현금 차감
+                cash -= (amount + commission)
+                
+                if symbol in holdings:
+                    # 추가 매수: 평균단가 계산
+                    old = holdings[symbol]
+                    old_shares = old["shares"]
+                    old_avg = old["avg_price"]
+                    new_shares = old_shares + shares
+                    new_avg = (old_avg * old_shares + price * shares) / new_shares
+                    holdings[symbol] = {
+                        "shares": new_shares,
+                        "avg_price": round(new_avg, 2),
+                        "sector": sector or old.get("sector", ""),
+                        "buy_date": old.get("buy_date", date)
+                    }
+                else:
+                    # 신규 매수
+                    holdings[symbol] = {
+                        "shares": shares,
+                        "avg_price": round(price, 2),
+                        "sector": sector,
+                        "buy_date": date
+                    }
+            
+            elif action in ["SELL", "STOP_LOSS"]:
+                # 현금 증가
+                cash += (amount - commission)
+                
+                if symbol in holdings:
+                    holdings[symbol]["shares"] -= shares
+                    if holdings[symbol]["shares"] <= 0:
+                        del holdings[symbol]
+        
+        # Holdings 시트 업데이트
+        ws = self._get_worksheet(SHEET_HOLDINGS)
+        ws.clear()
+        ws.append_row(HEADERS[SHEET_HOLDINGS])
+        
+        for symbol, info in holdings.items():
+            ws.append_row([
+                symbol,
+                to_python(info["shares"]),
+                to_python(info["avg_price"]),
+                str(info.get("sector", "")),
+                str(info.get("buy_date", ""))
+            ])
+        
+        cash = round(cash, 2)
+        print(f"Holdings synced ({len(holdings)} stocks, Cash: ${cash:,.2f})")
+        
+        return {"holdings": holdings, "cash": cash}
+
+
     # ============================================
     # Trades
     # ============================================
