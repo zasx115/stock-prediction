@@ -28,7 +28,8 @@ from telegram import (
     send_stop_loss,
     send_daily_summary,
     send_error,
-    send_trade_signal
+    send_trade_signal,
+    send_rebalancing
 )
 
 
@@ -290,6 +291,210 @@ def get_portfolio_from_sheets(sheets, sync_result=None):
             "stocks_value": 0,
             "total_value": INITIAL_CAPITAL
         }
+
+
+# ============================================
+# Rebalancing (리밸런싱 계산)
+# ============================================
+
+def calculate_rebalancing(portfolio, signal, min_trade_amount=50):
+    """
+    기존 보유 vs 새 신호 비교 → 리밸런싱 계산
+    
+    Args:
+        portfolio: get_portfolio_from_sheets() 결과
+        signal: get_today_signal() 결과
+        min_trade_amount: 최소 거래 금액 (이하면 무시)
+    
+    Returns:
+        dict: {
+            "actions": [
+                {"action": "SELL", "symbol": "NVDA", "shares": 3, "price": 850, "amount": 2550, "reason": "신호에 없음"},
+                {"action": "ADD", "symbol": "WDC", "shares": 2, "price": 274, "amount": 548, "reason": "비중 증가"},
+                {"action": "BUY", "symbol": "TER", "shares": 5, "price": 180, "amount": 900, "reason": "신규 매수"},
+                {"action": "HOLD", "symbol": "MU", "shares": 8, "price": 108, "amount": 0, "reason": "유지"},
+            ],
+            "summary": {
+                "total_buy": 1448,
+                "total_sell": 2550,
+                "net_cash_change": 1102
+            }
+        }
+    """
+    if signal.get("signal") != "BUY":
+        return {
+            "actions": [],
+            "summary": {"total_buy": 0, "total_sell": 0, "net_cash_change": 0},
+            "message": "HOLD 신호 - 매매 없음"
+        }
+    
+    holdings = portfolio.get("holdings", [])
+    cash = portfolio.get("cash", 0)
+    total_value = portfolio.get("total_value", INITIAL_CAPITAL)
+    
+    new_picks = signal.get("picks", [])
+    allocations = signal.get("allocations", [])
+    prices = signal.get("prices", {})
+    
+    # 현재 보유 종목 dict
+    current_holdings = {h["symbol"]: h for h in holdings}
+    
+    actions = []
+    total_buy = 0
+    total_sell = 0
+    
+    # ----- 1. 기존 보유 중 신호에 없는 종목 → SELL -----
+    for symbol, holding in current_holdings.items():
+        if symbol not in new_picks:
+            shares = holding["shares"]
+            price = holding.get("current_price", holding["avg_price"])
+            amount = shares * price
+            profit_pct = holding.get("profit_loss_pct", 0)
+            
+            actions.append({
+                "action": "SELL",
+                "symbol": symbol,
+                "shares": shares,
+                "price": round(price, 2),
+                "amount": round(amount, 2),
+                "profit_pct": round(profit_pct, 2),
+                "reason": "신호에서 제외"
+            })
+            total_sell += amount
+    
+    # ----- 2. 신호 종목 처리 -----
+    # 매도 후 예상 Cash
+    expected_cash = cash + total_sell
+    
+    for i, symbol in enumerate(new_picks):
+        alloc = allocations[i] if i < len(allocations) else 0.33
+        price = prices.get(symbol, 0)
+        
+        if price <= 0:
+            continue
+        
+        # 목표 금액
+        target_amount = total_value * alloc
+        target_shares = int(target_amount / price)
+        
+        # 현재 보유
+        current_shares = 0
+        if symbol in current_holdings:
+            current_shares = current_holdings[symbol]["shares"]
+        
+        # 차이 계산
+        diff_shares = target_shares - current_shares
+        diff_amount = diff_shares * price
+        
+        if diff_shares > 0 and diff_amount >= min_trade_amount:
+            # 매수 (신규 또는 추가)
+            action_type = "BUY" if current_shares == 0 else "ADD"
+            
+            # 가용 현금 체크
+            if diff_amount > expected_cash * 0.95:
+                diff_shares = int(expected_cash * 0.95 / price)
+                diff_amount = diff_shares * price
+            
+            if diff_shares > 0:
+                actions.append({
+                    "action": action_type,
+                    "symbol": symbol,
+                    "shares": diff_shares,
+                    "price": round(price, 2),
+                    "amount": round(diff_amount, 2),
+                    "current_shares": current_shares,
+                    "target_shares": target_shares,
+                    "reason": "신규 매수" if action_type == "BUY" else "비중 증가"
+                })
+                total_buy += diff_amount
+                expected_cash -= diff_amount
+        
+        elif diff_shares < 0 and abs(diff_amount) >= min_trade_amount:
+            # 비중 축소 (일부 매도)
+            sell_shares = abs(diff_shares)
+            sell_amount = sell_shares * price
+            
+            actions.append({
+                "action": "REDUCE",
+                "symbol": symbol,
+                "shares": sell_shares,
+                "price": round(price, 2),
+                "amount": round(sell_amount, 2),
+                "current_shares": current_shares,
+                "target_shares": target_shares,
+                "reason": "비중 축소"
+            })
+            total_sell += sell_amount
+        
+        else:
+            # 유지
+            if current_shares > 0:
+                actions.append({
+                    "action": "HOLD",
+                    "symbol": symbol,
+                    "shares": current_shares,
+                    "price": round(price, 2),
+                    "amount": 0,
+                    "reason": "유지 (차이 미미)"
+                })
+    
+    # 정렬: SELL → REDUCE → HOLD → ADD → BUY
+    action_order = {"SELL": 0, "REDUCE": 1, "HOLD": 2, "ADD": 3, "BUY": 4}
+    actions.sort(key=lambda x: action_order.get(x["action"], 5))
+    
+    return {
+        "actions": actions,
+        "summary": {
+            "total_buy": round(total_buy, 2),
+            "total_sell": round(total_sell, 2),
+            "net_cash_change": round(total_sell - total_buy, 2)
+        }
+    }
+
+
+def print_rebalancing(rebalancing):
+    """
+    리밸런싱 결과 출력
+    """
+    print("\n" + "=" * 60)
+    print("📊 리밸런싱 계산 결과")
+    print("=" * 60)
+    
+    if not rebalancing.get("actions"):
+        print(rebalancing.get("message", "매매 없음"))
+        return
+    
+    for act in rebalancing["actions"]:
+        action = act["action"]
+        symbol = act["symbol"]
+        shares = act["shares"]
+        price = act["price"]
+        amount = act["amount"]
+        reason = act.get("reason", "")
+        
+        if action == "SELL":
+            emoji = "🔴"
+            profit = act.get("profit_pct", 0)
+            print(f"{emoji} {action:6} {symbol:5} | {shares}주 @ ${price} = ${amount:,.0f} ({profit:+.1f}%) - {reason}")
+        elif action == "REDUCE":
+            emoji = "🟠"
+            print(f"{emoji} {action:6} {symbol:5} | {shares}주 @ ${price} = ${amount:,.0f} - {reason}")
+        elif action == "HOLD":
+            emoji = "⚪"
+            print(f"{emoji} {action:6} {symbol:5} | {shares}주 @ ${price} - {reason}")
+        elif action == "ADD":
+            emoji = "🟢"
+            print(f"{emoji} {action:6} {symbol:5} | +{shares}주 @ ${price} = ${amount:,.0f} - {reason}")
+        elif action == "BUY":
+            emoji = "🟢"
+            print(f"{emoji} {action:6} {symbol:5} | {shares}주 @ ${price} = ${amount:,.0f} - {reason}")
+    
+    summary = rebalancing["summary"]
+    print("-" * 60)
+    print(f"총 매도: ${summary['total_sell']:,.0f}")
+    print(f"총 매수: ${summary['total_buy']:,.0f}")
+    print(f"현금 변화: ${summary['net_cash_change']:+,.0f}")
+    print("=" * 60)
 
 
 def check_stop_loss(sheets):
@@ -612,11 +817,13 @@ def run_weekly(sheets=None):
         # 신호 생성
         signal = get_today_signal()
         sheets.save_signal(signal)
-        send_signal(signal, total_capital)  # 현재 자본금 전달
         
-        # 매매 안내 메시지
-        if signal["signal"] == "BUY":
-            send_trade_signal()
+        # 리밸런싱 계산 (기존 보유 vs 새 신호)
+        rebalancing = calculate_rebalancing(portfolio, signal)
+        print_rebalancing(rebalancing)
+        
+        # 텔레그램 발송 (리밸런싱 안내)
+        send_rebalancing(rebalancing, total_capital)
         
         # 손절 체크 (알림만)
         stop_alerts = check_stop_loss(sheets)
