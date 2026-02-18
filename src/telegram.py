@@ -6,6 +6,7 @@
 import requests
 import os
 from datetime import datetime
+from config import INITIAL_CAPITAL
 
 # ============================================
 # Settings
@@ -13,8 +14,6 @@ from datetime import datetime
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-from config import INITIAL_CAPITAL
 
 # ============================================
 # Send Message
@@ -191,7 +190,85 @@ def send_trade_signal():
     today = datetime.now().strftime("%Y-%m-%d")
     
     text = f"""<b>매매 시그널 발생! ({today})</b>
-매매 후 Holdings에 기록해주세요."""
+매매 후 Trades에 기록해주세요."""
+    
+    return send_message(text)
+
+
+def send_rebalancing(rebalancing, total_capital=None):
+    """
+    리밸런싱 안내 메시지
+    
+    Args:
+        rebalancing: calculate_rebalancing() 결과
+        total_capital: 현재 총 자본금
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    actions = rebalancing.get("actions", [])
+    
+    if not actions:
+        text = f"""<b>📊 리밸런싱 ({today})</b>
+{rebalancing.get("message", "매매 없음")}"""
+        return send_message(text)
+    
+    # 액션별 분류
+    sells = [a for a in actions if a["action"] == "SELL"]
+    reduces = [a for a in actions if a["action"] == "REDUCE"]
+    holds = [a for a in actions if a["action"] == "HOLD"]
+    adds = [a for a in actions if a["action"] == "ADD"]
+    buys = [a for a in actions if a["action"] == "BUY"]
+    
+    # 메시지 구성
+    capital_str = f"${total_capital:,.0f}" if total_capital else ""
+    
+    text = f"""<b>📊 리밸런싱 ({today})</b>
+Capital: {capital_str}
+
+"""
+    
+    # 매도
+    if sells:
+        text += "<b>🔴 매도 (전량)</b>\n"
+        for a in sells:
+            profit = a.get("profit_pct", 0)
+            text += f"• {a['symbol']} {a['shares']}주 @ ${a['price']} ({profit:+.1f}%)\n"
+        text += "\n"
+    
+    # 비중 축소
+    if reduces:
+        text += "<b>🟠 비중 축소</b>\n"
+        for a in reduces:
+            text += f"• {a['symbol']} -{a['shares']}주 @ ${a['price']}\n"
+        text += "\n"
+    
+    # 유지
+    if holds:
+        text += "<b>⚪ 유지</b>\n"
+        for a in holds:
+            text += f"• {a['symbol']} {a['shares']}주\n"
+        text += "\n"
+    
+    # 추가 매수
+    if adds:
+        text += "<b>🟢 추가 매수</b>\n"
+        for a in adds:
+            text += f"• {a['symbol']} +{a['shares']}주 @ ${a['price']}\n"
+        text += "\n"
+    
+    # 신규 매수
+    if buys:
+        text += "<b>🟢 신규 매수</b>\n"
+        for a in buys:
+            text += f"• {a['symbol']} {a['shares']}주 @ ${a['price']}\n"
+        text += "\n"
+    
+    # 요약
+    summary = rebalancing.get("summary", {})
+    text += f"""<b>💰 요약</b>
+매도 금액: ${summary.get('total_sell', 0):,.0f}
+매수 금액: ${summary.get('total_buy', 0):,.0f}
+현금 변화: ${summary.get('net_cash_change', 0):+,.0f}"""
     
     return send_message(text)
 
