@@ -52,28 +52,29 @@ except ImportError:
 # [1] 설정
 # ============================================
 
-# 모델 파라미터 (최적화된 값 - 과적합 방지)
+# 모델 파라미터 (최적화된 값 - n_estimators=1000)
 XGB_PARAMS = {
     'objective': 'binary:logistic',  # 이진 분류
     'eval_metric': 'logloss',
-    'max_depth': 4,                  # 트리 깊이 (6→4, 단순화)
-    'learning_rate': 0.03,           # 학습률 (0.05→0.03, 천천히)
-    'n_estimators': 300,             # 트리 개수 (200→300)
-    'min_child_weight': 5,           # 과적합 방지 (3→5)
-    'subsample': 0.7,                # 데이터 샘플링 (0.8→0.7)
-    'colsample_bytree': 0.7,         # 피처 샘플링 (0.8→0.7)
+    'max_depth': 4,                  # 트리 깊이 (단순화)
+    'learning_rate': 0.03,           # 학습률
+    'n_estimators': 1000,            # ⭐ 트리 개수 (최적값!)
+    'min_child_weight': 5,           # 과적합 방지
+    'subsample': 0.7,                # 데이터 샘플링
+    'colsample_bytree': 0.7,         # 피처 샘플링
     'scale_pos_weight': 3,           # 클래스 가중치
     'random_state': 42,
     'n_jobs': -1,                    # 병렬 처리
 }
 
-# LightGBM 파라미터
+# LightGBM 파라미터 (최적화된 값 - num_leaves=10)
 LGB_PARAMS = {
     'objective': 'binary',
     'metric': 'binary_logloss',
     'max_depth': 4,
     'learning_rate': 0.03,
-    'n_estimators': 300,
+    'n_estimators': 1000,            # ⭐ 트리 개수
+    'num_leaves': 10,                # ⭐ 핵심! 단순한 모델
     'min_child_weight': 5,
     'subsample': 0.7,
     'colsample_bytree': 0.7,
