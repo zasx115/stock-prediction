@@ -21,10 +21,15 @@ from data import get_sp500_list, download_stock_data, get_backtest_data
 # [1] 설정
 # ============================================
 
-# 학습/테스트 기간
-TRAIN_START = "2020-01-01"
-TRAIN_END = "2023-12-31"
-TEST_START = "2024-01-01"
+from datetime import datetime, timedelta
+
+# 학습/테스트 기간 (자동 롤링)
+# - 학습: 5년 전 ~ 1년 전
+# - 테스트: 1년 전 ~ 현재
+_today = datetime.now()
+TRAIN_START = (_today - timedelta(days=365*5)).strftime('%Y-%m-%d')  # 5년 전
+TRAIN_END = (_today - timedelta(days=365)).strftime('%Y-%m-%d')      # 1년 전
+TEST_START = (_today - timedelta(days=365)).strftime('%Y-%m-%d')     # 1년 전
 TEST_END = None  # None = 현재까지
 
 # 라벨 기준
