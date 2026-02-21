@@ -53,9 +53,11 @@ HYBRID_HOLDINGS_SHEET = "Hybrid_Holdings" # 보유 시트
 WEIGHT_MOMENTUM = 0.35
 WEIGHT_AI = 0.65
 
-# AI 학습 기간
-TRAIN_START = "2020-01-01"
-TRAIN_END = "2023-12-31"
+# AI 학습 기간 (자동 롤링)
+# - 학습: 5년 전 ~ 1년 전
+_today = datetime.now()
+TRAIN_START = (_today - timedelta(days=365*5)).strftime('%Y-%m-%d')  # 5년 전
+TRAIN_END = (_today - timedelta(days=365)).strftime('%Y-%m-%d')      # 1년 전
 
 
 # ============================================
