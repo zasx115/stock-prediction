@@ -2,15 +2,16 @@
 # 파일명: .github/workflows/hybrid_weekly.yml
 # 설명: Hybrid 전략 주간 자동 실행
 # 
-# 스케줄: 매주 화요일 22:00 UTC (수요일 07:00 KST)
+# 스케줄: 매주 화요일 06:55 UTC (한국시간 15:55)
+# 모멘텀(06:45) 10분 후 실행
 # ============================================
 
 name: Hybrid Weekly Signal
 
 on:
-  # 매주 화요일 22:00 UTC 실행
+  # 매주 화요일 06:55 UTC 실행 (모멘텀 10분 후)
   schedule:
-    - cron: '0 22 * * 2'
+    - cron: '55 6 * * 2'
   
   # 수동 실행 가능
   workflow_dispatch:
