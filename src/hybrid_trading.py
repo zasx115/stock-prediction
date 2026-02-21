@@ -42,7 +42,7 @@ except ImportError:
     print("⚠️ Sheets 모듈 없음 (선택적)")
 
 # Telegram
-from telegram import send_telegram
+from telegram import send_message
 
 
 # ============================================
@@ -488,7 +488,7 @@ def send_hybrid_signal(signal, total_capital):
         msg += f"   가격: ${price:.2f}\n"
         msg += f"   비중: {alloc*100:.0f}% ({shares}주)\n\n"
     
-    send_telegram(msg)
+    send_message(msg)
 
 
 def send_hybrid_rebalancing(rebalancing, total_capital):
@@ -546,7 +546,7 @@ def send_hybrid_rebalancing(rebalancing, total_capital):
     msg += f"매수: ${summary['total_buy']:,.0f}\n"
     msg += f"현금: ${summary['net_cash_change']:+,.0f}"
     
-    send_telegram(msg)
+    send_message(msg)
 
 
 # ============================================
