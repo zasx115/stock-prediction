@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests xgboost scikit-learn gspread oauth2client python-dotenv
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn gspread oauth2client python-dotenv
       
       # 4. 환경 변수 설정
       - name: Setup environment
