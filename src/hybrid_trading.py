@@ -30,14 +30,19 @@ from config import (
 # 데이터 및 전략
 from data import get_sp500_list, download_stock_data, get_backtest_data
 from strategy import CustomStrategy, prepare_price_data, filter_tuesday
-from ai_data import prepare_ai_data, create_features, get_feature_columns
+from ai_data import create_features, get_feature_columns
 from ai_strategy import AIStrategy, XGB_PARAMS
 
-# Google Sheets (별도 시트 사용)
-from sheets import GoogleSheetsManager
+# Google Sheets (선택적)
+try:
+    from sheets import SheetsManager
+    SHEETS_AVAILABLE = True
+except ImportError:
+    SHEETS_AVAILABLE = False
+    print("⚠️ Sheets 모듈 없음 (선택적)")
 
 # Telegram
-from telegram import send_telegram, send_rebalancing
+from telegram import send_telegram
 
 
 # ============================================
