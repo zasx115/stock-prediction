@@ -247,6 +247,80 @@ class HybridSheetsManager:
             print("✅ Signal 저장 완료")
         except Exception as e:
             print(f"⚠️ Signal 저장 실패: {e}")
+    
+    def save_daily_value(self, holdings, current_prices, cash, spy_price=0):
+        """
+        Daily_Value 시트에 일일 포트폴리오 가치 기록
+        
+        Args:
+            holdings: 보유 종목 dict
+            current_prices: 현재 가격 dict
+            cash: 현금
+            spy_price: SPY 가격
+        """
+        if not self.sheets:
+            return
+        
+        try:
+            # 주식 가치 계산
+            stocks_value = 0
+            for symbol, info in holdings.items():
+                shares = info.get('shares', 0)
+                price = current_prices.get(symbol, info.get('avg_price', 0))
+                stocks_value += shares * price
+            
+            # 총 가치
+            total_value = stocks_value + cash
+            
+            # Daily_Value 시트 가져오기/생성
+            try:
+                ws = self.sheets.spreadsheet.worksheet("Daily_Value")
+            except:
+                ws = self.sheets.spreadsheet.add_worksheet(title="Daily_Value", rows=5000, cols=10)
+                # 헤더 추가
+                ws.update("A1", [["Date", "Total_Value", "Cash", "Stocks_Value", "Daily_Return%", "SPY_Price", "SPY_Return%", "Alpha"]])
+            
+            # 이전 데이터 가져오기 (수익률 계산용)
+            data = ws.get_all_values()
+            prev_value = None
+            prev_spy = None
+            
+            if len(data) > 1:
+                last_row = data[-1]
+                try:
+                    prev_value = float(last_row[1]) if last_row[1] else None
+                    prev_spy = float(last_row[5]) if last_row[5] else None
+                except:
+                    pass
+            
+            # 수익률 계산
+            daily_return = 0
+            spy_return = 0
+            alpha = 0
+            
+            if prev_value and prev_value > 0:
+                daily_return = (total_value - prev_value) / prev_value * 100
+            
+            if prev_spy and prev_spy > 0 and spy_price > 0:
+                spy_return = (spy_price - prev_spy) / prev_spy * 100
+                alpha = daily_return - spy_return
+            
+            # 행 추가
+            row = [
+                datetime.now().strftime('%Y-%m-%d'),
+                round(total_value, 2),
+                round(cash, 2),
+                round(stocks_value, 2),
+                round(daily_return, 2),
+                round(spy_price, 2),
+                round(spy_return, 2),
+                round(alpha, 2)
+            ]
+            ws.append_row(row)
+            print(f"✅ Daily_Value 저장: ${total_value:,.2f}")
+            
+        except Exception as e:
+            print(f"⚠️ Daily_Value 저장 실패: {e}")
 
 
 # ============================================
@@ -809,6 +883,17 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     # Holdings 업데이트
     sheets.update_holdings(rebalancing['actions'], signal['prices'])
     
+    # 8. Daily_Value 저장
+    # 현금 계산 (매수 후 남은 금액)
+    cash = total_capital - rebalancing['summary']['total_buy'] + rebalancing['summary']['total_sell']
+    
+    # SPY 가격 가져오기
+    spy_price = signal['prices'].get('SPY', 0)
+    
+    # 새 포트폴리오로 Daily_Value 저장
+    new_holdings = sheets.get_holdings()
+    sheets.save_daily_value(new_holdings, signal['prices'], cash, spy_price)
+    
     print("\n✅ Hybrid 주간 실행 완료!")
     
     return {
@@ -818,7 +903,153 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
 
 
 # ============================================
-# [9] 테스트
+# [9] Daily 실행 (월,수,목,금)
+# ============================================
+
+def get_current_prices(symbols):
+    """
+    현재 가격 가져오기
+    
+    Args:
+        symbols: 종목 리스트
+    
+    Returns:
+        dict: {symbol: price}
+    """
+    import yfinance as yf
+    
+    prices = {}
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='1d')
+            if not hist.empty:
+                prices[symbol] = hist['Close'].iloc[-1]
+        except Exception as e:
+            print(f"⚠️ {symbol} 가격 조회 실패: {e}")
+    
+    return prices
+
+
+def check_stop_loss(holdings, current_prices, stop_loss_pct=STOP_LOSS):
+    """
+    손절 체크
+    
+    Args:
+        holdings: 보유 종목 dict
+        current_prices: 현재 가격 dict
+        stop_loss_pct: 손절 기준 (기본 -7%)
+    
+    Returns:
+        list: 손절 대상 종목 리스트
+    """
+    stop_loss_list = []
+    
+    for symbol, info in holdings.items():
+        avg_price = info.get('avg_price', 0)
+        current_price = current_prices.get(symbol, avg_price)
+        
+        if avg_price > 0:
+            return_pct = (current_price - avg_price) / avg_price
+            
+            if return_pct <= stop_loss_pct:
+                stop_loss_list.append({
+                    'symbol': symbol,
+                    'shares': info.get('shares', 0),
+                    'avg_price': avg_price,
+                    'current_price': current_price,
+                    'return_pct': return_pct * 100
+                })
+    
+    return stop_loss_list
+
+
+def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
+    """
+    Hybrid Daily 실행 (월,수,목,금)
+    - 손절 체크
+    - 일일 가치 기록
+    
+    Args:
+        total_capital: 총 자본금
+    """
+    print("=" * 60)
+    print("🤖 Hybrid Daily 실행")
+    print("=" * 60)
+    
+    # 1. Sheets 연결
+    sheets = HybridSheetsManager()
+    
+    # 2. 현재 보유 종목 가져오기
+    holdings = sheets.get_holdings()
+    
+    if not holdings:
+        print("📊 보유 종목 없음")
+        return
+    
+    print(f"📊 보유 종목: {list(holdings.keys())}")
+    
+    # 3. 현재 가격 가져오기
+    symbols = list(holdings.keys()) + ['SPY']
+    current_prices = get_current_prices(symbols)
+    
+    spy_price = current_prices.get('SPY', 0)
+    print(f"📈 SPY: ${spy_price:.2f}")
+    
+    # 4. 손절 체크
+    stop_loss_list = check_stop_loss(holdings, current_prices)
+    
+    if stop_loss_list:
+        print("\n🔴 손절 대상:")
+        msg = f"🚨 Hybrid 손절 알림\n\n"
+        
+        for item in stop_loss_list:
+            print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
+            msg += f"🔴 {item['symbol']}\n"
+            msg += f"   매수가: ${item['avg_price']:.2f}\n"
+            msg += f"   현재가: ${item['current_price']:.2f}\n"
+            msg += f"   수익률: {item['return_pct']:.1f}%\n\n"
+            
+            # Holdings에서 제거
+            sheets.sheets.remove_holding(item['symbol'])
+            
+            # Trade 기록
+            sheets.save_trade({
+                'symbol': item['symbol'],
+                'action': 'STOP_LOSS',
+                'shares': item['shares'],
+                'price': item['current_price'],
+                'amount': item['shares'] * item['current_price'],
+                'return_pct': item['return_pct']
+            })
+        
+        # Telegram 전송
+        send_message(msg)
+        
+        # 손절 후 Holdings 다시 로드
+        holdings = sheets.get_holdings()
+    else:
+        print("\n✅ 손절 대상 없음")
+    
+    # 5. Daily_Value 저장
+    # 현금 계산 (간단히 총 자본금 - 주식가치로 추정)
+    stocks_value = sum(
+        holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
+        for s in holdings
+    )
+    cash = total_capital - stocks_value
+    
+    # 음수면 0으로
+    if cash < 0:
+        cash = 0
+    
+    sheets.save_daily_value(holdings, current_prices, cash, spy_price)
+    
+    print("\n✅ Hybrid Daily 실행 완료!")
+
+
+# ============================================
+# [10] 테스트
 # ============================================
 
 if __name__ == "__main__":
