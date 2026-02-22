@@ -700,8 +700,7 @@ def send_hybrid_rebalancing(rebalancing, total_capital, signal=None):
         msg += "📊 선정 종목:\n"
         for i, (symbol, score) in enumerate(zip(signal['picks'], signal['scores'])):
             price = signal['prices'].get(symbol, 0)
-            alloc = signal['allocations'][i]
-            msg += f"{i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}, 비중 {alloc*100:.0f}%\n"
+            msg += f"{i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}\n"
         msg += "\n"
     
     # 액션별 분류
