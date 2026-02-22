@@ -106,7 +106,7 @@ class HybridSheetsManager:
             return {}
         
         try:
-            df = self.sheets.load_holdings(use_cache=False)
+            df = self.sheets.load_holdings()
             
             if df.empty:
                 return {}
@@ -198,19 +198,23 @@ class HybridSheetsManager:
             return
         
         try:
-            self.sheets.save_trade({
-                'date': datetime.now().strftime('%Y-%m-%d'),
-                'symbol': action['symbol'],
-                'action': action['action'],
-                'shares': action['shares'],
-                'price': action['price'],
-                'amount': action['amount'],
-                'commission': action['amount'] * BUY_COMMISSION,
-                'return_pct': action.get('return_pct', 0),
-                'realized_pnl': 0,
-                'sector': '',
-                'memo': memo
-            })
+            # Trades 시트에 직접 추가
+            ws = self.sheets.spreadsheet.worksheet("Trades")
+            row = [
+                datetime.now().strftime('%Y-%m-%d'),
+                action['symbol'],
+                action['action'],
+                action['shares'],
+                round(action['price'], 2),
+                round(action['amount'], 2),
+                round(action['amount'] * BUY_COMMISSION, 2),
+                round(action.get('return_pct', 0), 2),
+                0,  # realized_pnl
+                '',  # sector
+                memo
+            ]
+            ws.append_row(row)
+            print(f"✅ Trade 저장: {action['action']} {action['symbol']}")
         except Exception as e:
             print(f"⚠️ Trade 저장 실패: {e}")
     
@@ -225,13 +229,17 @@ class HybridSheetsManager:
             return
         
         try:
+            # scores를 문자열로 변환
+            scores_str = ', '.join([str(round(s, 4)) for s in signal['scores']])
+            allocs_str = ', '.join([str(int(a*100)) + '%' for a in signal['allocations']])
+            
             self.sheets.save_signal({
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
                 'analysis_date': datetime.now().strftime('%Y-%m-%d'),
                 'signal': 'HYBRID',
                 'picks': ', '.join(signal['picks']),
-                'scores': ', '.join([f"{s:.4f}" for s in signal['scores']]),
-                'allocations': ', '.join([f"{a*100:.0f}%" for a in signal['allocations']]),
+                'scores': scores_str,
+                'allocations': allocs_str,
                 'market_momentum': '',
                 'spy_price': 0,
                 'market_trend': ''
@@ -514,6 +522,7 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
             target_alloc = signal['allocations'][i]
             target_amount = total_capital * target_alloc
             price = signal['prices'].get(symbol, 0)
+            score = signal['scores'][i]  # 점수 추가
             
             if price <= 0:
                 continue
@@ -537,7 +546,9 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
                         'shares': current_shares,
                         'price': price,
                         'amount': current_amount,
-                        'reason': '유지'
+                        'reason': '유지',
+                        'score': score,
+                        'allocation': target_alloc
                     })
             elif diff > 0:
                 # 매수
@@ -550,7 +561,9 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
                         'shares': shares_to_buy,
                         'price': price,
                         'amount': shares_to_buy * price,
-                        'reason': '비중 증가' if action_type == 'ADD' else '신규 매수'
+                        'reason': '비중 증가' if action_type == 'ADD' else '신규 매수',
+                        'score': score,
+                        'allocation': target_alloc
                     })
             else:
                 # 비중 축소
@@ -565,7 +578,9 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
                         'price': price,
                         'amount': shares_to_sell * price,
                         'reason': '비중 축소',
-                        'return_pct': ret_pct
+                        'return_pct': ret_pct,
+                        'score': score,
+                        'allocation': target_alloc
                     })
     
     # 요약 계산
@@ -667,7 +682,7 @@ def send_hybrid_signal(signal, total_capital):
     send_message(msg)
 
 
-def send_hybrid_rebalancing(rebalancing, total_capital):
+def send_hybrid_rebalancing(rebalancing, total_capital, signal=None):
     """
     Hybrid 리밸런싱 텔레그램 전송
     """
@@ -677,7 +692,17 @@ def send_hybrid_rebalancing(rebalancing, total_capital):
     summary = rebalancing['summary']
     
     msg = f"🤖 Hybrid 리밸런싱 ({today})\n"
-    msg += f"Capital: ${total_capital:,.0f}\n\n"
+    msg += f"Capital: ${total_capital:,.0f}\n"
+    msg += f"가중치: M{WEIGHT_MOMENTUM*100:.0f}% + AI{WEIGHT_AI*100:.0f}%\n\n"
+    
+    # 선정 종목 (점수 포함)
+    if signal:
+        msg += "📊 선정 종목:\n"
+        for i, (symbol, score) in enumerate(zip(signal['picks'], signal['scores'])):
+            price = signal['prices'].get(symbol, 0)
+            alloc = signal['allocations'][i]
+            msg += f"{i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}, 비중 {alloc*100:.0f}%\n"
+        msg += "\n"
     
     # 액션별 분류
     sells = [a for a in actions if a['action'] == 'SELL']
@@ -770,8 +795,8 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     # 5. 출력
     print_hybrid_rebalancing(rebalancing)
     
-    # 6. Telegram 전송
-    send_hybrid_rebalancing(rebalancing, total_capital)
+    # 6. Telegram 전송 (signal 포함)
+    send_hybrid_rebalancing(rebalancing, total_capital, signal)
     
     # 7. Sheets 기록
     # 신호 저장
