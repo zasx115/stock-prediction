@@ -49,10 +49,13 @@ from telegram import send_message
 # [1] 설정
 # ============================================
 
-# Hybrid 전용 설정
-HYBRID_SHEET_NAME = "Hybrid_Signal"      # 신호 시트
-HYBRID_TRADES_SHEET = "Hybrid_Trades"    # 거래 시트
-HYBRID_HOLDINGS_SHEET = "Hybrid_Holdings" # 보유 시트
+# Hybrid 전용 Google Sheets 이름
+HYBRID_SPREADSHEET = "Hybrid_Paper_Trading"
+
+# 시트 이름
+HYBRID_HOLDINGS_SHEET = "Holdings"
+HYBRID_TRADES_SHEET = "Trades"
+HYBRID_SIGNALS_SHEET = "Signals"
 
 # 가중치
 WEIGHT_MOMENTUM = 0.35
@@ -63,6 +66,179 @@ WEIGHT_AI = 0.65
 _today = datetime.now()
 TRAIN_START = (_today - timedelta(days=365*5)).strftime('%Y-%m-%d')  # 5년 전
 TRAIN_END = (_today - timedelta(days=365)).strftime('%Y-%m-%d')      # 1년 전
+
+
+# ============================================
+# [1-1] Hybrid Sheets Manager
+# ============================================
+
+class HybridSheetsManager:
+    """
+    Hybrid 전용 Google Sheets 관리
+    기존 SheetsManager를 Hybrid 전용 스프레드시트로 사용
+    """
+    
+    def __init__(self):
+        self.sheets = None
+        self._connect()
+    
+    def _connect(self):
+        """Sheets 연결"""
+        if not SHEETS_AVAILABLE:
+            print("⚠️ Sheets 모듈 없음")
+            return
+        
+        try:
+            self.sheets = SheetsManager(spreadsheet_name=HYBRID_SPREADSHEET)
+            print(f"✅ Hybrid Sheets 연결: {HYBRID_SPREADSHEET}")
+        except Exception as e:
+            print(f"⚠️ Sheets 연결 실패: {e}")
+            self.sheets = None
+    
+    def get_holdings(self):
+        """
+        현재 보유 종목 가져오기
+        
+        Returns:
+            dict: {symbol: {shares, avg_price, sector, buy_date}}
+        """
+        if not self.sheets:
+            return {}
+        
+        try:
+            df = self.sheets.load_holdings(use_cache=False)
+            
+            if df.empty:
+                return {}
+            
+            holdings = {}
+            for _, row in df.iterrows():
+                symbol = row['Symbol']
+                if symbol:
+                    holdings[symbol] = {
+                        'shares': int(float(row.get('Shares', 0) or 0)),
+                        'avg_price': float(row.get('Avg_Price', 0) or 0),
+                        'sector': row.get('Sector', ''),
+                        'buy_date': row.get('Buy_Date', '')
+                    }
+            
+            print(f"📊 보유 종목: {len(holdings)}개")
+            return holdings
+            
+        except Exception as e:
+            print(f"⚠️ Holdings 로드 실패: {e}")
+            return {}
+    
+    def update_holdings(self, actions, current_prices):
+        """
+        리밸런싱 후 Holdings 업데이트
+        
+        Args:
+            actions: 리밸런싱 액션 리스트
+            current_prices: 현재 가격 dict
+        """
+        if not self.sheets:
+            return
+        
+        try:
+            for action in actions:
+                symbol = action['symbol']
+                act_type = action['action']
+                shares = action['shares']
+                price = action['price']
+                
+                if act_type == 'BUY':
+                    # 신규 매수
+                    self.sheets.save_holding({
+                        'symbol': symbol,
+                        'shares': shares,
+                        'avg_price': price,
+                        'sector': '',
+                        'buy_date': datetime.now().strftime('%Y-%m-%d')
+                    })
+                
+                elif act_type == 'SELL':
+                    # 전량 매도
+                    self.sheets.remove_holding(symbol)
+                
+                elif act_type == 'ADD':
+                    # 추가 매수 - 평균 단가 재계산
+                    holdings = self.get_holdings()
+                    if symbol in holdings:
+                        old_shares = holdings[symbol]['shares']
+                        old_price = holdings[symbol]['avg_price']
+                        new_shares = old_shares + shares
+                        new_avg = (old_shares * old_price + shares * price) / new_shares
+                        self.sheets.update_holding(symbol, shares=new_shares, avg_price=new_avg)
+                
+                elif act_type == 'REDUCE':
+                    # 일부 매도
+                    holdings = self.get_holdings()
+                    if symbol in holdings:
+                        new_shares = holdings[symbol]['shares'] - shares
+                        if new_shares <= 0:
+                            self.sheets.remove_holding(symbol)
+                        else:
+                            self.sheets.update_holding(symbol, shares=new_shares)
+            
+            print("✅ Holdings 업데이트 완료")
+            
+        except Exception as e:
+            print(f"⚠️ Holdings 업데이트 실패: {e}")
+    
+    def save_trade(self, action, memo="Hybrid"):
+        """
+        거래 기록 저장
+        
+        Args:
+            action: 거래 액션 dict
+            memo: 메모
+        """
+        if not self.sheets:
+            return
+        
+        try:
+            self.sheets.save_trade({
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'symbol': action['symbol'],
+                'action': action['action'],
+                'shares': action['shares'],
+                'price': action['price'],
+                'amount': action['amount'],
+                'commission': action['amount'] * BUY_COMMISSION,
+                'return_pct': action.get('return_pct', 0),
+                'realized_pnl': 0,
+                'sector': '',
+                'memo': memo
+            })
+        except Exception as e:
+            print(f"⚠️ Trade 저장 실패: {e}")
+    
+    def save_signal(self, signal):
+        """
+        신호 기록 저장
+        
+        Args:
+            signal: 신호 dict
+        """
+        if not self.sheets:
+            return
+        
+        try:
+            self.sheets.save_signal({
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'analysis_date': datetime.now().strftime('%Y-%m-%d'),
+                'signal': 'HYBRID',
+                'picks': ', '.join(signal['picks']),
+                'scores': ', '.join([f"{s:.4f}" for s in signal['scores']]),
+                'allocations': ', '.join([f"{a*100:.0f}%" for a in signal['allocations']]),
+                'market_momentum': '',
+                'spy_price': 0,
+                'market_trend': ''
+            })
+            print("✅ Signal 저장 완료")
+        except Exception as e:
+            print(f"⚠️ Signal 저장 실패: {e}")
 
 
 # ============================================
@@ -553,12 +729,11 @@ def send_hybrid_rebalancing(rebalancing, total_capital):
 # [8] 메인 실행
 # ============================================
 
-def run_hybrid_weekly(sheets=None, total_capital=INITIAL_CAPITAL):
+def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     """
     Hybrid 주간 실행
     
     Args:
-        sheets: GoogleSheetsManager 인스턴스
         total_capital: 총 자본금
     """
     print("=" * 60)
@@ -567,32 +742,48 @@ def run_hybrid_weekly(sheets=None, total_capital=INITIAL_CAPITAL):
     print(f"자본금: ${total_capital:,}")
     print(f"가중치: 모멘텀 {WEIGHT_MOMENTUM*100:.0f}% + AI {WEIGHT_AI*100:.0f}%")
     
-    # 1. 신호 생성
+    # 1. Sheets 연결
+    sheets = HybridSheetsManager()
+    
+    # 2. 신호 생성
     signal = get_hybrid_signal()
     
     if signal is None:
         print("❌ 신호 생성 실패")
         return
     
-    # 2. 현재 포트폴리오 (sheets에서 가져오거나 빈 dict)
-    portfolio = {}
-    if sheets:
-        # TODO: sheets에서 현재 보유 종목 가져오기
-        pass
+    # 3. 현재 포트폴리오 (Sheets에서 가져오기)
+    portfolio = sheets.get_holdings()
     
-    # 3. 리밸런싱 계산
+    # 현재 가격 추가
+    for symbol in portfolio:
+        if symbol in signal['prices']:
+            portfolio[symbol]['current_price'] = signal['prices'][symbol]
+        else:
+            portfolio[symbol]['current_price'] = portfolio[symbol]['avg_price']
+    
+    print(f"📊 현재 보유: {list(portfolio.keys()) if portfolio else '없음'}")
+    
+    # 4. 리밸런싱 계산
     rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital)
     
-    # 4. 출력
+    # 5. 출력
     print_hybrid_rebalancing(rebalancing)
     
-    # 5. Telegram 전송
+    # 6. Telegram 전송
     send_hybrid_rebalancing(rebalancing, total_capital)
     
-    # 6. Sheets 기록 (옵션)
-    if sheets:
-        # TODO: sheets에 기록
-        pass
+    # 7. Sheets 기록
+    # 신호 저장
+    sheets.save_signal(signal)
+    
+    # 거래 저장
+    for action in rebalancing['actions']:
+        if action['action'] != 'HOLD':
+            sheets.save_trade(action)
+    
+    # Holdings 업데이트
+    sheets.update_holdings(rebalancing['actions'], signal['prices'])
     
     print("\n✅ Hybrid 주간 실행 완료!")
     
