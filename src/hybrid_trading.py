@@ -1031,7 +1031,7 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
     else:
         print("\n✅ 손절 대상 없음")
     
-    # 5. Daily_Value 저장
+    # 5. Daily_Value 저장 및 수익률 계산
     # 현금 계산 (간단히 총 자본금 - 주식가치로 추정)
     stocks_value = sum(
         holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
@@ -1043,7 +1043,58 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
     if cash < 0:
         cash = 0
     
+    # 총 포트폴리오 가치
+    total_value = stocks_value + cash
+    
+    # 이전 Daily_Value에서 수익률 계산
+    daily_return = 0
+    spy_return = 0
+    alpha = 0
+    
+    try:
+        ws = sheets.sheets.spreadsheet.worksheet("Daily_Value")
+        data = ws.get_all_values()
+        
+        if len(data) > 1:
+            last_row = data[-1]
+            prev_value = float(last_row[1]) if last_row[1] else total_capital
+            prev_spy = float(last_row[5]) if last_row[5] else spy_price
+            
+            if prev_value > 0:
+                daily_return = (total_value - prev_value) / prev_value * 100
+            
+            if prev_spy > 0 and spy_price > 0:
+                spy_return = (spy_price - prev_spy) / prev_spy * 100
+                alpha = daily_return - spy_return
+    except:
+        pass
+    
+    # Daily_Value 저장
     sheets.save_daily_value(holdings, current_prices, cash, spy_price)
+    
+    # 6. Daily Summary 텔레그램 전송
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    msg = f"📊 Hybrid Daily Summary ({today})\n"
+    msg += f"Portfolio: ${total_value:,.2f}\n"
+    msg += f"Daily: {daily_return:+.2f}%\n"
+    msg += f"SPY: {spy_return:+.2f}%\n"
+    msg += f"Alpha: {alpha:+.2f}%\n\n"
+    
+    msg += "Holdings:\n"
+    for symbol, info in holdings.items():
+        shares = info.get('shares', 0)
+        avg_price = info.get('avg_price', 0)
+        current_price = current_prices.get(symbol, avg_price)
+        
+        if avg_price > 0:
+            return_pct = (current_price - avg_price) / avg_price * 100
+        else:
+            return_pct = 0
+        
+        msg += f"• {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
+    
+    send_message(msg)
     
     print("\n✅ Hybrid Daily 실행 완료!")
 
@@ -1064,4 +1115,4 @@ if __name__ == "__main__":
             print("\n✅ 신호 생성 성공!")
             send_hybrid_signal(signal, INITIAL_CAPITAL)
     except Exception as e:
-        print(f"❌ 에러: {e}") 
+        print(f"❌ 에러: {e}")
