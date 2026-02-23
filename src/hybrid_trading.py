@@ -320,6 +320,27 @@ class HybridSheetsManager:
             return
         
         try:
+            # 시장 필터링 발동 체크
+            if signal.get('market_filter', False):
+                self.sheets.save_signal({
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                    'analysis_date': datetime.now().strftime('%Y-%m-%d'),
+                    'signal': 'MARKET_FILTER',
+                    'picks': '없음 (시장 필터링)',
+                    'scores': '',
+                    'allocations': '',
+                    'market_momentum': '',
+                    'spy_price': signal.get('spy_price', 0),
+                    'market_trend': 'BEARISH'
+                })
+                print("✅ Signal 저장 완료 (시장 필터링)")
+                return
+            
+            # 빈 signal 체크
+            if not signal.get('picks'):
+                print("⚠️ Signal 저장 스킵: 선정 종목 없음")
+                return
+            
             # scores를 문자열로 변환
             scores_str = ', '.join([str(round(s, 4)) for s in signal['scores']])
             allocs_str = ', '.join([str(int(a*100)) + '%' for a in signal['allocations']])
@@ -332,8 +353,8 @@ class HybridSheetsManager:
                 'scores': scores_str,
                 'allocations': allocs_str,
                 'market_momentum': '',
-                'spy_price': 0,
-                'market_trend': ''
+                'spy_price': signal.get('spy_price', 0),
+                'market_trend': 'BULLISH'
             })
             print("✅ Signal 저장 완료")
         except Exception as e:
@@ -353,12 +374,15 @@ class HybridSheetsManager:
             return
         
         try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            
             # 주식 가치 계산
             stocks_value = 0
-            for symbol, info in holdings.items():
-                shares = info.get('shares', 0)
-                price = current_prices.get(symbol, info.get('avg_price', 0))
-                stocks_value += shares * price
+            if holdings:
+                for symbol, info in holdings.items():
+                    shares = info.get('shares', 0)
+                    price = current_prices.get(symbol, info.get('avg_price', 0))
+                    stocks_value += shares * price
             
             # 총 가치
             total_value = stocks_value + cash
@@ -370,19 +394,32 @@ class HybridSheetsManager:
                 ws = self.sheets.spreadsheet.add_worksheet(title="Daily_Value", rows=5000, cols=10)
                 # 헤더 추가
                 ws.update("A1", [["Date", "Total_Value", "Cash", "Stocks_Value", "Daily_Return%", "SPY_Price", "SPY_Return%", "Alpha"]])
+                print("✅ Daily_Value 시트 자동 생성")
             
-            # 이전 데이터 가져오기 (수익률 계산용)
+            # 데이터 가져오기
             data = ws.get_all_values()
+            
+            # 중복 체크 (오늘 이미 기록되어 있으면 업데이트)
+            today_row_idx = None
+            if len(data) > 1:
+                for i, row in enumerate(data[1:], start=2):  # 1-indexed, 헤더 제외
+                    if row[0] == today:
+                        today_row_idx = i
+                        break
+            
+            # 이전 데이터에서 수익률 계산 (오늘 제외)
             prev_value = None
             prev_spy = None
             
             if len(data) > 1:
-                last_row = data[-1]
-                try:
-                    prev_value = float(last_row[1]) if last_row[1] else None
-                    prev_spy = float(last_row[5]) if last_row[5] else None
-                except:
-                    pass
+                for row in reversed(data[1:]):
+                    if row[0] != today:
+                        try:
+                            prev_value = float(row[1]) if row[1] else None
+                            prev_spy = float(row[5]) if row[5] else None
+                        except:
+                            pass
+                        break
             
             # 수익률 계산
             daily_return = 0
@@ -396,9 +433,9 @@ class HybridSheetsManager:
                 spy_return = (spy_price - prev_spy) / prev_spy * 100
                 alpha = daily_return - spy_return
             
-            # 행 추가
+            # 행 데이터
             row = [
-                datetime.now().strftime('%Y-%m-%d'),
+                today,
                 round(total_value, 2),
                 round(cash, 2),
                 round(stocks_value, 2),
@@ -407,8 +444,15 @@ class HybridSheetsManager:
                 round(spy_return, 2),
                 round(alpha, 2)
             ]
-            ws.append_row(row)
-            print(f"✅ Daily_Value 저장: ${total_value:,.2f}")
+            
+            if today_row_idx:
+                # 오늘 데이터 업데이트
+                ws.update(f"A{today_row_idx}:H{today_row_idx}", [row])
+                print(f"✅ Daily_Value 업데이트: ${total_value:,.2f}")
+            else:
+                # 새 행 추가
+                ws.append_row(row)
+                print(f"✅ Daily_Value 저장: ${total_value:,.2f}")
             
         except Exception as e:
             print(f"⚠️ Daily_Value 저장 실패: {e}")
@@ -727,7 +771,7 @@ def get_hybrid_signal():
 # [5] 리밸런싱 계산
 # ============================================
 
-def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amount=50):
+def calculate_hybrid_rebalancing(portfolio, signal, total_capital, available_cash=None, min_trade_amount=50):
     """
     리밸런싱 계산
     
@@ -735,6 +779,7 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
         portfolio: 현재 보유 {symbol: {shares, avg_price, current_price}}
         signal: 새 신호 {picks, scores, allocations, prices}
         total_capital: 총 자본금
+        available_cash: 사용 가능한 현금 (None이면 total_capital 사용)
         min_trade_amount: 최소 거래 금액
     
     Returns:
@@ -745,21 +790,31 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
     new_symbols = set(signal['picks']) if signal else set()
     current_symbols = set(portfolio.keys()) if portfolio else set()
     
+    # 매도 금액 먼저 계산 (현금 추정용)
+    sell_amount = 0
+    
     # 1. 매도 (신호에서 제외된 종목)
     for symbol in current_symbols - new_symbols:
         info = portfolio[symbol]
         current_price = info.get('current_price', info['avg_price'])
         ret_pct = (current_price - info['avg_price']) / info['avg_price'] * 100
+        amount = info['shares'] * current_price
+        sell_amount += amount
         
         actions.append({
             'action': 'SELL',
             'symbol': symbol,
             'shares': info['shares'],
             'price': current_price,
-            'amount': info['shares'] * current_price,
+            'amount': amount,
             'reason': '신호에서 제외',
             'return_pct': ret_pct
         })
+    
+    # 사용 가능한 현금 계산
+    if available_cash is None:
+        available_cash = total_capital
+    cash_available = available_cash + sell_amount
     
     # 2. 매수/조정 (신규 및 기존)
     if signal:
@@ -796,8 +851,16 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
                         'allocation': target_alloc
                     })
             elif diff > 0:
-                # 매수
+                # 매수 - 현금 체크
                 shares_to_buy = int(diff / price)
+                buy_amount = shares_to_buy * price
+                
+                # 현금 부족 시 조정
+                if buy_amount > cash_available:
+                    shares_to_buy = int(cash_available / price)
+                    buy_amount = shares_to_buy * price
+                    print(f"⚠️ {symbol}: 현금 부족으로 {shares_to_buy}주로 조정")
+                
                 if shares_to_buy > 0:
                     action_type = 'ADD' if current_shares > 0 else 'BUY'
                     actions.append({
@@ -805,28 +868,31 @@ def calculate_hybrid_rebalancing(portfolio, signal, total_capital, min_trade_amo
                         'symbol': symbol,
                         'shares': shares_to_buy,
                         'price': price,
-                        'amount': shares_to_buy * price,
+                        'amount': buy_amount,
                         'reason': '비중 증가' if action_type == 'ADD' else '신규 매수',
                         'score': score,
                         'allocation': target_alloc
                     })
+                    cash_available -= buy_amount  # 남은 현금 업데이트
             else:
                 # 비중 축소
                 shares_to_sell = int(abs(diff) / price)
                 shares_to_sell = min(shares_to_sell, current_shares)
                 if shares_to_sell > 0:
                     ret_pct = (price - portfolio[symbol]['avg_price']) / portfolio[symbol]['avg_price'] * 100
+                    sell_amt = shares_to_sell * price
                     actions.append({
                         'action': 'REDUCE',
                         'symbol': symbol,
                         'shares': shares_to_sell,
                         'price': price,
-                        'amount': shares_to_sell * price,
+                        'amount': sell_amt,
                         'reason': '비중 축소',
                         'return_pct': ret_pct,
                         'score': score,
                         'allocation': target_alloc
                     })
+                    cash_available += sell_amt  # 현금 증가
     
     # 요약 계산
     total_buy = sum(a['amount'] for a in actions if a['action'] in ['BUY', 'ADD'])
@@ -1107,16 +1173,19 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     
     print(f"📊 현재 보유: {list(portfolio.keys()) if portfolio else '없음'}")
     
-    # 5. 리밸런싱 계산
-    rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital)
+    # 5. 현재 현금 가져오기
+    available_cash = sheets.get_cash()
     
-    # 6. 출력
+    # 6. 리밸런싱 계산 (현금 전달)
+    rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital, available_cash)
+    
+    # 7. 출력
     print_hybrid_rebalancing(rebalancing)
     
-    # 7. Telegram 전송 (signal 포함)
+    # 8. Telegram 전송 (signal 포함)
     send_hybrid_rebalancing(rebalancing, total_capital, signal)
     
-    # 8. Sheets 기록
+    # 9. Sheets 기록
     # 신호 저장
     sheets.save_signal(signal)
     
@@ -1242,99 +1311,107 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
     print("🤖 Hybrid Daily 실행")
     print("=" * 60)
     
+    today = datetime.now().strftime('%Y-%m-%d')
+    
     # 1. Sheets 연결
     sheets = HybridSheetsManager()
     
     # 2. 현재 보유 종목 가져오기
     holdings = sheets.get_holdings()
     
-    if not holdings:
-        print("📊 보유 종목 없음")
-        return
-    
-    print(f"📊 보유 종목: {list(holdings.keys())}")
-    
-    # 3. 현재 가격 가져오기
-    symbols = list(holdings.keys()) + ['SPY']
+    # 4. 현재 가격 가져오기 (보유종목 + SPY)
+    symbols = list(holdings.keys()) + ['SPY'] if holdings else ['SPY']
     current_prices = get_current_prices(symbols)
     
     spy_price = current_prices.get('SPY', 0)
     print(f"📈 SPY: ${spy_price:.2f}")
     
-    # 4. 손절 체크
-    stop_loss_list = check_stop_loss(holdings, current_prices)
-    
-    if stop_loss_list:
-        print("\n🔴 손절 대상:")
-        msg = f"🚨 Hybrid 손절 알림\n\n"
+    # 5. 보유 종목이 있으면 손절 체크
+    if holdings:
+        print(f"📊 보유 종목: {list(holdings.keys())}")
         
-        total_stop_loss_amount = 0
+        stop_loss_list = check_stop_loss(holdings, current_prices)
         
-        for item in stop_loss_list:
-            print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
-            msg += f"🔴 {item['symbol']}\n"
-            msg += f"   매수가: ${item['avg_price']:.2f}\n"
-            msg += f"   현재가: ${item['current_price']:.2f}\n"
-            msg += f"   수익률: {item['return_pct']:.1f}%\n\n"
+        if stop_loss_list:
+            print("\n🔴 손절 대상:")
+            msg = f"🚨 Hybrid 손절 알림\n\n"
             
-            # 손절 금액 계산
-            sell_amount = item['shares'] * item['current_price']
-            total_stop_loss_amount += sell_amount
+            total_stop_loss_amount = 0
             
-            # Holdings에서 제거
-            sheets.sheets.remove_holding(item['symbol'])
+            for item in stop_loss_list:
+                print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
+                msg += f"🔴 {item['symbol']}\n"
+                msg += f"   매수가: ${item['avg_price']:.2f}\n"
+                msg += f"   현재가: ${item['current_price']:.2f}\n"
+                msg += f"   수익률: {item['return_pct']:.1f}%\n\n"
+                
+                # 손절 금액 계산
+                sell_amount = item['shares'] * item['current_price']
+                total_stop_loss_amount += sell_amount
+                
+                # Holdings에서 제거
+                sheets.sheets.remove_holding(item['symbol'])
+                
+                # Trade 기록
+                sheets.save_trade({
+                    'symbol': item['symbol'],
+                    'action': 'STOP_LOSS',
+                    'shares': item['shares'],
+                    'price': item['current_price'],
+                    'amount': sell_amount,
+                    'return_pct': item['return_pct']
+                })
             
-            # Trade 기록
-            sheets.save_trade({
-                'symbol': item['symbol'],
-                'action': 'STOP_LOSS',
-                'shares': item['shares'],
-                'price': item['current_price'],
-                'amount': sell_amount,
-                'return_pct': item['return_pct']
-            })
-        
-        # 현금 업데이트 (손절 매도 금액 입금)
-        if total_stop_loss_amount > 0:
-            sheets.update_cash(total_stop_loss_amount, f"손절 매도: {', '.join([i['symbol'] for i in stop_loss_list])}")
+            # 현금 업데이트 (손절 매도 금액 입금)
+            if total_stop_loss_amount > 0:
+                sheets.update_cash(total_stop_loss_amount, f"손절 매도: {', '.join([i['symbol'] for i in stop_loss_list])}")
+                
+                # 수수료 차감
+                commission = total_stop_loss_amount * SELL_COMMISSION
+                sheets.update_cash(-commission, "손절 수수료")
             
-            # 수수료 차감
-            commission = total_stop_loss_amount * SELL_COMMISSION
-            sheets.update_cash(-commission, "손절 수수료")
-        
-        # Telegram 전송
-        send_message(msg)
-        
-        # 손절 후 Holdings 다시 로드
-        holdings = sheets.get_holdings()
+            # Telegram 전송
+            send_message(msg)
+            
+            # 손절 후 Holdings 다시 로드
+            holdings = sheets.get_holdings()
+        else:
+            print("\n✅ 손절 대상 없음")
     else:
-        print("\n✅ 손절 대상 없음")
+        print("📊 보유 종목 없음 (현금 보유 중)")
     
-    # 5. 현재 현금 가져오기
+    # 6. 현재 현금 가져오기
     cash = sheets.get_cash()
     
     # 주식 가치 계산
-    stocks_value = sum(
-        holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
-        for s in holdings
-    )
+    stocks_value = 0
+    if holdings:
+        stocks_value = sum(
+            holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
+            for s in holdings
+        )
     
     # 총 포트폴리오 가치
     total_value = stocks_value + cash
     
-    # 이전 Daily_Value에서 수익률 계산
+    # 7. 이전 Daily_Value에서 수익률 계산 (오늘 제외)
     daily_return = 0
     spy_return = 0
     alpha = 0
+    prev_value = total_capital
+    prev_spy = spy_price
     
     try:
         ws = sheets.sheets.spreadsheet.worksheet("Daily_Value")
         data = ws.get_all_values()
         
         if len(data) > 1:
-            last_row = data[-1]
-            prev_value = float(last_row[1]) if last_row[1] else total_capital
-            prev_spy = float(last_row[5]) if last_row[5] else spy_price
+            # 오늘 날짜가 아닌 마지막 행 찾기
+            for row in reversed(data[1:]):
+                if row[0] != today:
+                    prev_value = float(row[1]) if row[1] else total_capital
+                    prev_spy = float(row[5]) if row[5] else spy_price
+                    break
             
             if prev_value > 0:
                 daily_return = (total_value - prev_value) / prev_value * 100
@@ -1345,30 +1422,31 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
     except:
         pass
     
-    # Daily_Value 저장
+    # 8. Daily_Value 저장
     sheets.save_daily_value(holdings, current_prices, cash, spy_price)
     
-    # 6. Daily Summary 텔레그램 전송
-    today = datetime.now().strftime('%Y-%m-%d')
-    
+    # 9. Daily Summary 텔레그램 전송
     msg = f"📊 Hybrid Daily Summary ({today})\n"
     msg += f"Portfolio: ${total_value:,.2f}\n"
     msg += f"Daily: {daily_return:+.2f}%\n"
     msg += f"SPY: {spy_return:+.2f}%\n"
     msg += f"Alpha: {alpha:+.2f}%\n\n"
     
-    msg += "Holdings:\n"
-    for symbol, info in holdings.items():
-        shares = info.get('shares', 0)
-        avg_price = info.get('avg_price', 0)
-        current_price = current_prices.get(symbol, avg_price)
-        
-        if avg_price > 0:
-            return_pct = (current_price - avg_price) / avg_price * 100
-        else:
-            return_pct = 0
-        
-        msg += f"• {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
+    if holdings:
+        msg += "Holdings:\n"
+        for symbol, info in holdings.items():
+            shares = info.get('shares', 0)
+            avg_price = info.get('avg_price', 0)
+            current_price = current_prices.get(symbol, avg_price)
+            
+            if avg_price > 0:
+                return_pct = (current_price - avg_price) / avg_price * 100
+            else:
+                return_pct = 0
+            
+            msg += f"• {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
+    else:
+        msg += "Holdings: 없음 (현금 보유)"
     
     send_message(msg)
     
