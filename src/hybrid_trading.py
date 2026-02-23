@@ -95,6 +95,97 @@ class HybridSheetsManager:
             print(f"⚠️ Sheets 연결 실패: {e}")
             self.sheets = None
     
+    # ============================================
+    # 현금 추적 시스템
+    # ============================================
+    
+    def get_cash(self):
+        """
+        현재 현금 잔고 가져오기
+        Cash 시트의 마지막 행에서 조회
+        
+        Returns:
+            float: 현금 잔고
+        """
+        if not self.sheets:
+            return INITIAL_CAPITAL
+        
+        try:
+            # Cash 시트 가져오기/생성
+            try:
+                ws = self.sheets.spreadsheet.worksheet("Cash")
+            except:
+                # 시트 없으면 생성하고 초기 자본금 입력
+                ws = self.sheets.spreadsheet.add_worksheet(title="Cash", rows=5000, cols=5)
+                ws.update("A1", [["Date", "Cash", "Change", "Reason", "Balance_Check"]])
+                ws.append_row([
+                    datetime.now().strftime('%Y-%m-%d'),
+                    INITIAL_CAPITAL,
+                    0,
+                    "초기 자본금",
+                    INITIAL_CAPITAL
+                ])
+                return INITIAL_CAPITAL
+            
+            # 마지막 행 가져오기
+            data = ws.get_all_values()
+            
+            if len(data) <= 1:
+                # 헤더만 있으면 초기 자본금 입력
+                ws.append_row([
+                    datetime.now().strftime('%Y-%m-%d'),
+                    INITIAL_CAPITAL,
+                    0,
+                    "초기 자본금",
+                    INITIAL_CAPITAL
+                ])
+                return INITIAL_CAPITAL
+            
+            last_row = data[-1]
+            cash = float(last_row[1]) if last_row[1] else INITIAL_CAPITAL
+            print(f"💰 현재 현금: ${cash:,.2f}")
+            return cash
+            
+        except Exception as e:
+            print(f"⚠️ Cash 로드 실패: {e}")
+            return INITIAL_CAPITAL
+    
+    def update_cash(self, amount, reason=""):
+        """
+        현금 변동 기록
+        
+        Args:
+            amount: 변동 금액 (양수: 입금, 음수: 출금)
+            reason: 변동 사유
+        """
+        if not self.sheets:
+            return
+        
+        try:
+            # 현재 현금 가져오기
+            current_cash = self.get_cash()
+            new_cash = current_cash + amount
+            
+            # Cash 시트에 기록
+            try:
+                ws = self.sheets.spreadsheet.worksheet("Cash")
+            except:
+                ws = self.sheets.spreadsheet.add_worksheet(title="Cash", rows=5000, cols=5)
+                ws.update("A1", [["Date", "Cash", "Change", "Reason", "Balance_Check"]])
+            
+            row = [
+                datetime.now().strftime('%Y-%m-%d %H:%M'),
+                round(new_cash, 2),
+                round(amount, 2),
+                reason,
+                round(new_cash, 2)
+            ]
+            ws.append_row(row)
+            print(f"💰 현금 변동: ${amount:+,.2f} → ${new_cash:,.2f} ({reason})")
+            
+        except Exception as e:
+            print(f"⚠️ Cash 업데이트 실패: {e}")
+    
     def get_holdings(self):
         """
         현재 보유 종목 가져오기
@@ -883,9 +974,29 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     # Holdings 업데이트
     sheets.update_holdings(rebalancing['actions'], signal['prices'])
     
-    # 8. Daily_Value 저장
-    # 현금 계산 (매수 후 남은 금액)
-    cash = total_capital - rebalancing['summary']['total_buy'] + rebalancing['summary']['total_sell']
+    # 8. 현금 업데이트
+    # 매도 금액 입금
+    if rebalancing['summary']['total_sell'] > 0:
+        sheets.update_cash(
+            rebalancing['summary']['total_sell'], 
+            f"매도: {', '.join([a['symbol'] for a in rebalancing['actions'] if a['action'] in ['SELL', 'REDUCE']])}"
+        )
+    
+    # 매수 금액 출금
+    if rebalancing['summary']['total_buy'] > 0:
+        sheets.update_cash(
+            -rebalancing['summary']['total_buy'], 
+            f"매수: {', '.join([a['symbol'] for a in rebalancing['actions'] if a['action'] in ['BUY', 'ADD']])}"
+        )
+    
+    # 수수료 차감
+    total_commission = (rebalancing['summary']['total_buy'] + rebalancing['summary']['total_sell']) * BUY_COMMISSION
+    if total_commission > 0:
+        sheets.update_cash(-total_commission, "수수료")
+    
+    # 9. Daily_Value 저장
+    # 현재 현금 가져오기
+    cash = sheets.get_cash()
     
     # SPY 가격 가져오기
     spy_price = signal['prices'].get('SPY', 0)
@@ -1003,12 +1114,18 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
         print("\n🔴 손절 대상:")
         msg = f"🚨 Hybrid 손절 알림\n\n"
         
+        total_stop_loss_amount = 0
+        
         for item in stop_loss_list:
             print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
             msg += f"🔴 {item['symbol']}\n"
             msg += f"   매수가: ${item['avg_price']:.2f}\n"
             msg += f"   현재가: ${item['current_price']:.2f}\n"
             msg += f"   수익률: {item['return_pct']:.1f}%\n\n"
+            
+            # 손절 금액 계산
+            sell_amount = item['shares'] * item['current_price']
+            total_stop_loss_amount += sell_amount
             
             # Holdings에서 제거
             sheets.sheets.remove_holding(item['symbol'])
@@ -1019,9 +1136,17 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
                 'action': 'STOP_LOSS',
                 'shares': item['shares'],
                 'price': item['current_price'],
-                'amount': item['shares'] * item['current_price'],
+                'amount': sell_amount,
                 'return_pct': item['return_pct']
             })
+        
+        # 현금 업데이트 (손절 매도 금액 입금)
+        if total_stop_loss_amount > 0:
+            sheets.update_cash(total_stop_loss_amount, f"손절 매도: {', '.join([i['symbol'] for i in stop_loss_list])}")
+            
+            # 수수료 차감
+            commission = total_stop_loss_amount * SELL_COMMISSION
+            sheets.update_cash(-commission, "손절 수수료")
         
         # Telegram 전송
         send_message(msg)
@@ -1031,17 +1156,14 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
     else:
         print("\n✅ 손절 대상 없음")
     
-    # 5. Daily_Value 저장 및 수익률 계산
-    # 현금 계산 (간단히 총 자본금 - 주식가치로 추정)
+    # 5. 현재 현금 가져오기
+    cash = sheets.get_cash()
+    
+    # 주식 가치 계산
     stocks_value = sum(
         holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
         for s in holdings
     )
-    cash = total_capital - stocks_value
-    
-    # 음수면 0으로
-    if cash < 0:
-        cash = 0
     
     # 총 포트폴리오 가치
     total_value = stocks_value + cash
