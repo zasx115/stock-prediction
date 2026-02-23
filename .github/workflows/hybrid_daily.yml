@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests gspread oauth2client python-dotenv lxml
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn gspread oauth2client python-dotenv lxml
       
       # 4. 환경 변수 설정
       - name: Setup environment
@@ -64,4 +64,4 @@ jobs:
           print('🤖 Hybrid Daily 실행 시작...')
           run_hybrid_daily(total_capital=INITIAL_CAPITAL)
           print('✅ 완료!')
-          " 
+          "
