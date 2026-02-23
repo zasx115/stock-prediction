@@ -1064,4 +1064,4 @@ if __name__ == "__main__":
             print("\n✅ 신호 생성 성공!")
             send_hybrid_signal(signal, INITIAL_CAPITAL)
     except Exception as e:
-        print(f"❌ 에러: {e}")
+        print(f"❌ 에러: {e}") 
