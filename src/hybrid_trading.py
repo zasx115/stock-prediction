@@ -418,20 +418,27 @@ class HybridSheetsManager:
 # [2] Hybrid 전략 클래스 (간소화 버전)
 # ============================================
 
+# 시장 필터링 설정
+MARKET_FILTER_MA_PERIOD = 20  # 20일 이동평균
+
 class HybridTradingStrategy:
     """
     하이브리드 트레이딩 전략
     모멘텀 점수 + AI 확률 결합
+    + 시장 필터링 (SPY > 20일 MA)
     """
     
-    def __init__(self, weight_momentum=WEIGHT_MOMENTUM, weight_ai=WEIGHT_AI):
+    def __init__(self, weight_momentum=WEIGHT_MOMENTUM, weight_ai=WEIGHT_AI,
+                 use_market_filter=True):
         self.weight_m = weight_momentum
         self.weight_ai = weight_ai
+        self.use_market_filter = use_market_filter
         
         self.ai_strategy = None
         self.momentum_strategy = None
         self.score_df = None
         self.feature_cols = None
+        self.spy_df = None  # SPY 데이터
         
         self.is_prepared = False
     
@@ -456,8 +463,51 @@ class HybridTradingStrategy:
         tuesday_df = filter_tuesday(price_df)
         self.score_df, _, _ = self.momentum_strategy.prepare(price_df, tuesday_df)
         
+        # SPY 데이터 저장 (시장 필터링용)
+        if 'SPY' in price_df.columns:
+            self.spy_df = price_df[['SPY']].copy()
+            self.spy_df.columns = ['close']
+            print(f"\n[3] SPY 데이터 로드: {len(self.spy_df)}일")
+        
         self.is_prepared = True
         print("\n✅ Hybrid 전략 준비 완료!")
+        if self.use_market_filter:
+            print(f"   시장 필터링: ON (SPY > {MARKET_FILTER_MA_PERIOD}일 MA)")
+        else:
+            print("   시장 필터링: OFF")
+    
+    def check_market_condition(self, date):
+        """
+        시장 상황 체크: SPY > 20일 이동평균
+        
+        Args:
+            date: 체크할 날짜
+        
+        Returns:
+            tuple: (매수가능 여부, SPY가격, MA가격)
+        """
+        if not self.use_market_filter:
+            return True, 0, 0
+        
+        if self.spy_df is None or self.spy_df.empty:
+            return True, 0, 0
+        
+        date_ts = pd.Timestamp(date)
+        
+        # 해당 날짜까지의 SPY 데이터
+        spy_data = self.spy_df[self.spy_df.index <= date_ts]
+        
+        if len(spy_data) < MARKET_FILTER_MA_PERIOD:
+            return True, 0, 0  # 데이터 부족하면 매수 허용
+        
+        # 20일 이동평균 계산
+        spy_ma = spy_data['close'].rolling(MARKET_FILTER_MA_PERIOD).mean().iloc[-1]
+        spy_price = spy_data['close'].iloc[-1]
+        
+        # SPY > 20일 MA면 매수 가능
+        is_bullish = spy_price > spy_ma
+        
+        return is_bullish, spy_price, spy_ma
     
     def select_stocks(self, current_df, price_df, date):
         """
@@ -469,12 +519,28 @@ class HybridTradingStrategy:
             date: 기준 날짜
         
         Returns:
-            dict: picks, scores, allocations, prices
+            dict: picks, scores, allocations, prices, market_status
         """
         if not self.is_prepared:
             raise ValueError("prepare() 먼저 실행하세요.")
         
         date_ts = pd.Timestamp(date)
+        
+        # ----- 시장 필터링 체크 -----
+        is_bullish, spy_price, spy_ma = self.check_market_condition(date)
+        
+        if not is_bullish:
+            print(f"⚠️ 시장 필터링 발동: SPY ${spy_price:.2f} < MA20 ${spy_ma:.2f}")
+            print("   → 매수 보류 (현금 보유)")
+            return {
+                'picks': [],
+                'scores': [],
+                'allocations': [],
+                'prices': {'SPY': spy_price},
+                'market_filter': True,
+                'spy_price': spy_price,
+                'spy_ma': spy_ma
+            }
         
         # 해당 날짜 데이터
         date_df = current_df[current_df['date'] == date_ts].copy()
@@ -534,11 +600,18 @@ class HybridTradingStrategy:
         else:
             allocations = [1.0]
         
+        # SPY 가격 추가
+        prices = dict(zip(top_picks['symbol'], top_picks['close']))
+        prices['SPY'] = spy_price
+        
         return {
             'picks': top_picks['symbol'].tolist(),
             'scores': top_picks['hybrid_score'].tolist(),
             'allocations': allocations[:n_picks],
-            'prices': dict(zip(top_picks['symbol'], top_picks['close']))
+            'prices': prices,
+            'market_filter': False,
+            'spy_price': spy_price,
+            'spy_ma': spy_ma
         }
 
 
@@ -609,8 +682,8 @@ def get_hybrid_signal():
     # 데이터 준비
     train_df, current_df, price_df, features = prepare_hybrid_data()
     
-    # 전략 준비
-    strategy = HybridTradingStrategy()
+    # 전략 준비 (시장 필터링 ON)
+    strategy = HybridTradingStrategy(use_market_filter=True)
     strategy.prepare(train_df, price_df, features)
     
     # 오늘 신호
@@ -633,6 +706,13 @@ def get_hybrid_signal():
     if result is None:
         print("❌ 선정된 종목 없음")
         return None
+    
+    # 시장 필터링 발동 체크
+    if result.get('market_filter', False):
+        print(f"\n⚠️ 시장 필터링 발동!")
+        print(f"   SPY: ${result.get('spy_price', 0):.2f} < MA20: ${result.get('spy_ma', 0):.2f}")
+        print(f"   → 이번 주 매수 보류 (현금 보유)")
+        return result
     
     print(f"\n✅ 선정 종목:")
     for i, (symbol, score) in enumerate(zip(result['picks'], result['scores'])):
@@ -941,7 +1021,81 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
         print("❌ 신호 생성 실패")
         return
     
-    # 3. 현재 포트폴리오 (Sheets에서 가져오기)
+    # 3. 시장 필터링 체크
+    if signal.get('market_filter', False):
+        print("\n⚠️ 시장 필터링 발동 - 매수 보류")
+        
+        # 현재 보유 종목 전량 매도
+        portfolio = sheets.get_holdings()
+        
+        if portfolio:
+            print("📤 보유 종목 전량 매도:")
+            
+            # 현재 가격 가져오기
+            import yfinance as yf
+            for symbol in portfolio:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period='1d')
+                    if not hist.empty:
+                        portfolio[symbol]['current_price'] = hist['Close'].iloc[-1]
+                except:
+                    portfolio[symbol]['current_price'] = portfolio[symbol]['avg_price']
+            
+            total_sell_amount = 0
+            sell_symbols = []
+            
+            for symbol, info in portfolio.items():
+                shares = info['shares']
+                price = info.get('current_price', info['avg_price'])
+                amount = shares * price
+                total_sell_amount += amount
+                sell_symbols.append(symbol)
+                
+                ret_pct = (price - info['avg_price']) / info['avg_price'] * 100
+                print(f"  • {symbol}: {shares}주 @ ${price:.2f} ({ret_pct:+.1f}%)")
+                
+                # Holdings에서 제거
+                sheets.sheets.remove_holding(symbol)
+                
+                # Trade 기록
+                sheets.save_trade({
+                    'symbol': symbol,
+                    'action': 'SELL',
+                    'shares': shares,
+                    'price': price,
+                    'amount': amount,
+                    'return_pct': ret_pct
+                })
+            
+            # 현금 업데이트
+            if total_sell_amount > 0:
+                sheets.update_cash(total_sell_amount, f"시장필터링 매도: {', '.join(sell_symbols)}")
+                commission = total_sell_amount * SELL_COMMISSION
+                sheets.update_cash(-commission, "수수료")
+        
+        # Telegram 전송
+        spy_price = signal.get('spy_price', 0)
+        spy_ma = signal.get('spy_ma', 0)
+        
+        msg = f"⚠️ Hybrid 시장 필터링 ({datetime.now().strftime('%Y-%m-%d')})\n\n"
+        msg += f"SPY: ${spy_price:.2f}\n"
+        msg += f"MA20: ${spy_ma:.2f}\n"
+        msg += f"상태: 하락 추세 ❌\n\n"
+        msg += "→ 이번 주 매수 보류\n"
+        msg += "→ 현금 보유"
+        
+        send_message(msg)
+        
+        # Daily_Value 저장
+        cash = sheets.get_cash()
+        new_holdings = sheets.get_holdings()
+        sheets.save_daily_value(new_holdings, signal['prices'], cash, spy_price)
+        
+        print("\n✅ Hybrid 주간 실행 완료 (시장 필터링)")
+        return {'signal': signal, 'market_filter': True}
+    
+    # 4. 현재 포트폴리오 (Sheets에서 가져오기)
     portfolio = sheets.get_holdings()
     
     # 현재 가격 추가
@@ -953,16 +1107,16 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     
     print(f"📊 현재 보유: {list(portfolio.keys()) if portfolio else '없음'}")
     
-    # 4. 리밸런싱 계산
+    # 5. 리밸런싱 계산
     rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital)
     
-    # 5. 출력
+    # 6. 출력
     print_hybrid_rebalancing(rebalancing)
     
-    # 6. Telegram 전송 (signal 포함)
+    # 7. Telegram 전송 (signal 포함)
     send_hybrid_rebalancing(rebalancing, total_capital, signal)
     
-    # 7. Sheets 기록
+    # 8. Sheets 기록
     # 신호 저장
     sheets.save_signal(signal)
     
@@ -974,7 +1128,7 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     # Holdings 업데이트
     sheets.update_holdings(rebalancing['actions'], signal['prices'])
     
-    # 8. 현금 업데이트
+    # 9. 현금 업데이트
     # 매도 금액 입금
     if rebalancing['summary']['total_sell'] > 0:
         sheets.update_cash(
@@ -994,7 +1148,7 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     if total_commission > 0:
         sheets.update_cash(-total_commission, "수수료")
     
-    # 9. Daily_Value 저장
+    # 10. Daily_Value 저장
     # 현재 현금 가져오기
     cash = sheets.get_cash()
     
