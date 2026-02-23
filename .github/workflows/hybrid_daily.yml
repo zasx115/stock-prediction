@@ -64,4 +64,4 @@ jobs:
           print('🤖 Hybrid Daily 실행 시작...')
           run_hybrid_daily(total_capital=INITIAL_CAPITAL)
           print('✅ 완료!')
-          "
+          " 
