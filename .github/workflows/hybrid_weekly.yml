@@ -62,6 +62,7 @@ jobs:
           from config import INITIAL_CAPITAL
           
           print('🤖 Hybrid 전략 실행 시작...')
-          result = run_hybrid_weekly(total_capital=INITIAL_CAPITAL)
+          # result = run_hybrid_weekly(total_capital=INITIAL_CAPITAL)
+          result = run_hybrid_weekly()
           print('✅ 완료!')
           "
