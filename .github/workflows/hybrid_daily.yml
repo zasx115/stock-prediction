@@ -62,6 +62,7 @@ jobs:
           from config import INITIAL_CAPITAL
           
           print('🤖 Hybrid Daily 실행 시작...')
-          run_hybrid_daily(total_capital=INITIAL_CAPITAL)
+          #run_hybrid_daily(total_capital=INITIAL_CAPITAL)
+          run_hybrid_daily()
           print('✅ 완료!')
           "
