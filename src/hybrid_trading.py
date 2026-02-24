@@ -1108,17 +1108,14 @@ def send_hybrid_rebalancing(rebalancing, total_capital, signal=None):
 # [8] 메인 실행
 # ============================================
 
-def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
+def run_hybrid_weekly():
     """
     Hybrid 주간 실행
-    
-    Args:
-        total_capital: 총 자본금
+    - 동적 자본금: 현금 + 주식가치
     """
     print("=" * 60)
     print("🤖 Hybrid 주간 실행")
     print("=" * 60)
-    print(f"자본금: ${total_capital:,}")
     print(f"가중치: 모멘텀 {WEIGHT_MOMENTUM*100:.0f}% + AI {WEIGHT_AI*100:.0f}%")
     
     # 1. Sheets 연결
@@ -1183,10 +1180,17 @@ def run_hybrid_weekly(total_capital=INITIAL_CAPITAL):
     
     print(f"📊 현재 보유: {list(portfolio.keys()) if portfolio else '없음'}")
     
-    # 5. 현재 현금 가져오기
+    # 5. 동적 자본금 계산 (현금 + 주식가치)
     available_cash = sheets.get_cash()
+    stocks_value = sum(
+        info.get('shares', 0) * info.get('current_price', info.get('avg_price', 0))
+        for info in portfolio.values()
+    ) if portfolio else 0
     
-    # 6. 리밸런싱 계산 (현금 전달)
+    total_capital = available_cash + stocks_value
+    print(f"💰 동적 자본금: ${total_capital:,.2f} (현금 ${available_cash:,.2f} + 주식 ${stocks_value:,.2f})")
+    
+    # 6. 리밸런싱 계산 (동적 자본금 사용)
     rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital, available_cash)
     
     # 7. 출력
@@ -1308,14 +1312,12 @@ def check_stop_loss(holdings, current_prices, stop_loss_pct=STOP_LOSS):
     return stop_loss_list
 
 
-def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
+def run_hybrid_daily():
     """
     Hybrid Daily 실행 (월,수,목,금)
     - 손절 체크
     - 일일 가치 기록
-    
-    Args:
-        total_capital: 총 자본금
+    - 동적 자본금 사용
     """
     print("=" * 60)
     print("🤖 Hybrid Daily 실행")
@@ -1401,14 +1403,15 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
             for s in holdings
         )
     
-    # 총 포트폴리오 가치
+    # 총 포트폴리오 가치 (동적 자본금)
     total_value = stocks_value + cash
+    print(f"💰 포트폴리오: ${total_value:,.2f} (현금 ${cash:,.2f} + 주식 ${stocks_value:,.2f})")
     
     # 7. 이전 Daily_Value에서 수익률 계산 (오늘 제외)
     daily_return = 0
     spy_return = 0
     alpha = 0
-    prev_value = total_capital
+    prev_value = total_value  # 이전 값 없으면 현재 값 사용
     prev_spy = spy_price
     
     try:
@@ -1419,7 +1422,7 @@ def run_hybrid_daily(total_capital=INITIAL_CAPITAL):
             # 오늘 날짜가 아닌 마지막 행 찾기
             for row in reversed(data[1:]):
                 if row[0] != today:
-                    prev_value = float(row[1]) if row[1] else total_capital
+                    prev_value = float(row[1]) if row[1] else total_value
                     prev_spy = float(row[5]) if row[5] else spy_price
                     break
             
