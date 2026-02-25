@@ -331,7 +331,7 @@ class HybridSheetsManager:
                     'scores': '',
                     'allocations': '',
                     'market_momentum': round(market_momentum, 4),
-                    'spy_price': 0,
+                    'spy_price': round(signal.get('prices', {}).get('SPY', 0), 2),
                     'market_trend': 'DOWN'
                 })
                 print("✅ Signal 저장 완료 (HOLD)")
@@ -355,7 +355,7 @@ class HybridSheetsManager:
                 'scores': scores_str,
                 'allocations': allocs_str,
                 'market_momentum': round(market_momentum, 4),
-                'spy_price': 0,
+                'spy_price': round(signal.get('prices', {}).get('SPY', 0), 2),
                 'market_trend': 'UP'
             })
             print("✅ Signal 저장 완료")
@@ -689,9 +689,15 @@ class HybridTradingStrategy:
         else:
             allocations = [1.0]
         
-        # 가격 dict
+        # 가격 dict (SPY 포함)
         prices = dict(zip(top_picks['symbol'], top_picks['close']))
-        
+
+        # SPY 가격 추가 (Daily_Value 및 텔레그램 수익률 계산용)
+        if 'SPY' in price_df.columns:
+            available_spy_dates = price_df.index[price_df.index <= date_ts]
+            if len(available_spy_dates) > 0:
+                prices['SPY'] = float(price_df['SPY'].loc[available_spy_dates[-1]])
+
         return {
             'picks': top_picks['symbol'].tolist(),
             'scores': top_picks['hybrid_score'].tolist(),
@@ -798,7 +804,7 @@ def get_hybrid_signal():
     # 시장 필터링 발동 체크
     if result.get('market_filter', False):
         print(f"\n⚠️ 시장 필터링 발동!")
-        print(f"   SPY: ${result.get('spy_price', 0):.2f} < MA20: ${result.get('spy_ma', 0):.2f}")
+        print(f"   평균 1개월 수익률: {result.get('market_momentum', 0):.4f} <= 0")
         print(f"   → 이번 주 매수 보류 (현금 보유)")
         return result
     
