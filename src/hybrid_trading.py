@@ -1418,23 +1418,34 @@ def run_hybrid_daily():
     spy_return = 0
     alpha = 0
     prev_value = total_value  # 이전 값 없으면 현재 값 사용
-    prev_spy = spy_price
-    
+
+    # SPY 전일 종가: yfinance 5d 히스토리에서 직접 조회 (시트 기록 버그 영향 없음)
+    prev_spy = 0
+    try:
+        import yfinance as yf
+        spy_hist = yf.Ticker('SPY').history(period='5d')
+        if len(spy_hist) >= 2:
+            prev_spy = float(spy_hist['Close'].iloc[-2])
+            # spy_price도 최신 종가로 재확인 (기존 값이 0인 경우 대비)
+            if spy_price == 0:
+                spy_price = float(spy_hist['Close'].iloc[-1])
+    except Exception as e:
+        print(f"⚠️ SPY 전일 가격 조회 실패: {e}")
+
     try:
         ws = sheets.sheets.spreadsheet.worksheet("Daily_Value")
         data = ws.get_all_values()
-        
+
         if len(data) > 1:
-            # 오늘 날짜가 아닌 마지막 행 찾기
+            # 오늘 날짜가 아닌 마지막 행에서 전일 포트폴리오 가치 가져오기
             for row in reversed(data[1:]):
                 if row[0] != today:
                     prev_value = float(row[1]) if row[1] else total_value
-                    prev_spy = float(row[5]) if row[5] else spy_price
                     break
-            
+
             if prev_value > 0:
                 daily_return = (total_value - prev_value) / prev_value * 100
-            
+
             if prev_spy > 0 and spy_price > 0:
                 spy_return = (spy_price - prev_spy) / prev_spy * 100
                 alpha = daily_return - spy_return
