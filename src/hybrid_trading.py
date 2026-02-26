@@ -279,35 +279,16 @@ class HybridSheetsManager:
     
     def save_trade(self, action, memo="Hybrid"):
         """
-        거래 기록 저장
-        
+        거래 기록 저장 (Trades 시트는 수동 입력 — 콘솔에만 출력)
+
         Args:
             action: 거래 액션 dict
             memo: 메모
         """
-        if not self.sheets:
-            return
-        
-        try:
-            # Trades 시트에 직접 추가
-            ws = self.sheets.spreadsheet.worksheet("Trades")
-            row = [
-                datetime.now().strftime('%Y-%m-%d'),
-                action['symbol'],
-                action['action'],
-                action['shares'],
-                round(action['price'], 2),
-                round(action['amount'], 2),
-                round(action['amount'] * BUY_COMMISSION, 2),
-                round(action.get('return_pct', 0), 2),
-                0,  # realized_pnl
-                '',  # sector
-                memo
-            ]
-            ws.append_row(row)
-            print(f"✅ Trade 저장: {action['action']} {action['symbol']}")
-        except Exception as e:
-            print(f"⚠️ Trade 저장 실패: {e}")
+        # Trades 시트는 수동 입력이므로 콘솔 출력만 제공
+        print(f"📋 [수동 입력] Trade: {action['action']} {action['symbol']} "
+              f"{action['shares']}주 @ ${round(action['price'], 2):.2f} "
+              f"(${round(action['amount'], 2):,.2f}) [{memo}]")
     
     def save_signal(self, signal):
         """
