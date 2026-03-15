@@ -102,89 +102,22 @@ class HybridSheetsManager:
     def get_cash(self):
         """
         현재 현금 잔고 가져오기
-        Cash 시트의 마지막 행에서 조회
-        
+        Trades 시트 기반으로 계산 (모멘텀과 동일)
+
         Returns:
             float: 현금 잔고
         """
         if not self.sheets:
             return INITIAL_CAPITAL
-        
+
         try:
-            # Cash 시트 가져오기/생성
-            try:
-                ws = self.sheets.spreadsheet.worksheet("Cash")
-            except:
-                # 시트 없으면 생성하고 초기 자본금 입력
-                ws = self.sheets.spreadsheet.add_worksheet(title="Cash", rows=5000, cols=5)
-                ws.update("A1", [["Date", "Cash", "Change", "Reason", "Balance_Check"]])
-                ws.append_row([
-                    datetime.now().strftime('%Y-%m-%d'),
-                    INITIAL_CAPITAL,
-                    0,
-                    "초기 자본금",
-                    INITIAL_CAPITAL
-                ])
-                return INITIAL_CAPITAL
-            
-            # 마지막 행 가져오기
-            data = ws.get_all_values()
-            
-            if len(data) <= 1:
-                # 헤더만 있으면 초기 자본금 입력
-                ws.append_row([
-                    datetime.now().strftime('%Y-%m-%d'),
-                    INITIAL_CAPITAL,
-                    0,
-                    "초기 자본금",
-                    INITIAL_CAPITAL
-                ])
-                return INITIAL_CAPITAL
-            
-            last_row = data[-1]
-            cash = float(last_row[1]) if last_row[1] else INITIAL_CAPITAL
+            sync_result = self.sheets.sync_holdings_from_trades()
+            cash = sync_result.get("cash", INITIAL_CAPITAL)
             print(f"💰 현재 현금: ${cash:,.2f}")
             return cash
-            
         except Exception as e:
             print(f"⚠️ Cash 로드 실패: {e}")
             return INITIAL_CAPITAL
-    
-    def update_cash(self, amount, reason=""):
-        """
-        현금 변동 기록
-        
-        Args:
-            amount: 변동 금액 (양수: 입금, 음수: 출금)
-            reason: 변동 사유
-        """
-        if not self.sheets:
-            return
-        
-        try:
-            # 현재 현금 가져오기
-            current_cash = self.get_cash()
-            new_cash = current_cash + amount
-            
-            # Cash 시트에 기록
-            try:
-                ws = self.sheets.spreadsheet.worksheet("Cash")
-            except:
-                ws = self.sheets.spreadsheet.add_worksheet(title="Cash", rows=5000, cols=5)
-                ws.update("A1", [["Date", "Cash", "Change", "Reason", "Balance_Check"]])
-            
-            row = [
-                datetime.now().strftime('%Y-%m-%d %H:%M'),
-                round(new_cash, 2),
-                round(amount, 2),
-                reason,
-                round(new_cash, 2)
-            ]
-            ws.append_row(row)
-            print(f"💰 현금 변동: ${amount:+,.2f} → ${new_cash:,.2f} ({reason})")
-            
-        except Exception as e:
-            print(f"⚠️ Cash 업데이트 실패: {e}")
     
     def get_holdings(self):
         """
@@ -220,75 +153,52 @@ class HybridSheetsManager:
             print(f"⚠️ Holdings 로드 실패: {e}")
             return {}
     
-    def update_holdings(self, actions, current_prices):
+    def sync_holdings(self):
         """
-        리밸런싱 후 Holdings 업데이트
-        
-        Args:
-            actions: 리밸런싱 액션 리스트
-            current_prices: 현재 가격 dict
+        Trades 시트 기반으로 Holdings 동기화 (모멘텀과 동일)
+
+        Returns:
+            dict: {holdings: {...}, cash: float}
         """
         if not self.sheets:
-            return
-        
+            return {"holdings": {}, "cash": INITIAL_CAPITAL}
+
         try:
-            for action in actions:
-                symbol = action['symbol']
-                act_type = action['action']
-                shares = action['shares']
-                price = action['price']
-                
-                if act_type == 'BUY':
-                    # 신규 매수
-                    self.sheets.save_holding({
-                        'symbol': symbol,
-                        'shares': shares,
-                        'avg_price': price,
-                        'sector': '',
-                        'buy_date': datetime.now().strftime('%Y-%m-%d')
-                    })
-                
-                elif act_type == 'SELL':
-                    # 전량 매도
-                    self.sheets.remove_holding(symbol)
-                
-                elif act_type == 'ADD':
-                    # 추가 매수 - 평균 단가 재계산
-                    holdings = self.get_holdings()
-                    if symbol in holdings:
-                        old_shares = holdings[symbol]['shares']
-                        old_price = holdings[symbol]['avg_price']
-                        new_shares = old_shares + shares
-                        new_avg = (old_shares * old_price + shares * price) / new_shares
-                        self.sheets.update_holding(symbol, shares=new_shares, avg_price=new_avg)
-                
-                elif act_type == 'REDUCE':
-                    # 일부 매도
-                    holdings = self.get_holdings()
-                    if symbol in holdings:
-                        new_shares = holdings[symbol]['shares'] - shares
-                        if new_shares <= 0:
-                            self.sheets.remove_holding(symbol)
-                        else:
-                            self.sheets.update_holding(symbol, shares=new_shares)
-            
-            print("✅ Holdings 업데이트 완료")
-            
+            sync_result = self.sheets.sync_holdings_from_trades()
+            print("✅ Holdings 동기화 완료")
+            return sync_result
         except Exception as e:
-            print(f"⚠️ Holdings 업데이트 실패: {e}")
+            print(f"⚠️ Holdings 동기화 실패: {e}")
+            return {"holdings": {}, "cash": INITIAL_CAPITAL}
     
     def save_trade(self, action, memo="Hybrid"):
         """
-        거래 기록 저장 (Trades 시트는 수동 입력 — 콘솔에만 출력)
+        거래 기록 저장 (Trades 시트에 저장 - 모멘텀과 동일)
 
         Args:
             action: 거래 액션 dict
             memo: 메모
         """
-        # Trades 시트는 수동 입력이므로 콘솔 출력만 제공
-        print(f"📋 [수동 입력] Trade: {action['action']} {action['symbol']} "
-              f"{action['shares']}주 @ ${round(action['price'], 2):.2f} "
-              f"(${round(action['amount'], 2):,.2f}) [{memo}]")
+        if not self.sheets:
+            print(f"📋 [Sheets 없음] Trade: {action['action']} {action['symbol']} "
+                  f"{action['shares']}주 @ ${round(action['price'], 2):.2f}")
+            return
+
+        try:
+            self.sheets.save_trades([{
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "symbol": action.get("symbol", ""),
+                "action": action.get("action", ""),
+                "shares": action.get("shares", 0),
+                "price": action.get("price", 0),
+                "amount": action.get("amount", 0),
+                "return_pct": action.get("return_pct", 0),
+                "realized_pnl": action.get("realized_pnl", 0),
+                "sector": action.get("sector", ""),
+                "memo": memo
+            }])
+        except Exception as e:
+            print(f"⚠️ Trade 저장 실패: {e}")
     
     def save_signal(self, signal):
         """
@@ -345,8 +255,8 @@ class HybridSheetsManager:
     
     def save_daily_value(self, holdings, current_prices, cash, spy_price=0):
         """
-        Daily_Value 시트에 일일 포트폴리오 가치 기록
-        
+        Daily_Value 시트에 일일 포트폴리오 가치 기록 (모멘텀과 동일)
+
         Args:
             holdings: 보유 종목 dict
             current_prices: 현재 가격 dict
@@ -355,10 +265,8 @@ class HybridSheetsManager:
         """
         if not self.sheets:
             return
-        
+
         try:
-            today = datetime.now().strftime('%Y-%m-%d')
-            
             # 주식 가치 계산
             stocks_value = 0
             if holdings:
@@ -366,79 +274,180 @@ class HybridSheetsManager:
                     shares = info.get('shares', 0)
                     price = current_prices.get(symbol, info.get('avg_price', 0))
                     stocks_value += shares * price
-            
-            # 총 가치
+
             total_value = stocks_value + cash
-            
-            # Daily_Value 시트 가져오기/생성
-            try:
-                ws = self.sheets.spreadsheet.worksheet("Daily_Value")
-            except:
-                ws = self.sheets.spreadsheet.add_worksheet(title="Daily_Value", rows=5000, cols=10)
-                # 헤더 추가
-                ws.update("A1", [["Date", "Total_Value", "Cash", "Stocks_Value", "Daily_Return%", "SPY_Price", "SPY_Return%", "Alpha"]])
-                print("✅ Daily_Value 시트 자동 생성")
-            
-            # 데이터 가져오기
-            data = ws.get_all_values()
-            
-            # 중복 체크 (오늘 이미 기록되어 있으면 업데이트)
-            today_row_idx = None
-            if len(data) > 1:
-                for i, row in enumerate(data[1:], start=2):  # 1-indexed, 헤더 제외
-                    if row[0] == today:
-                        today_row_idx = i
-                        break
-            
-            # 이전 데이터에서 수익률 계산 (오늘 제외)
-            prev_value = None
-            prev_spy = None
-            
-            if len(data) > 1:
-                for row in reversed(data[1:]):
-                    if row[0] != today:
-                        try:
-                            prev_value = float(row[1]) if row[1] else None
-                            prev_spy = float(row[5]) if row[5] else None
-                        except:
-                            pass
-                        break
-            
-            # 수익률 계산
-            daily_return = 0
-            spy_return = 0
-            alpha = 0
-            
-            if prev_value and prev_value > 0:
-                daily_return = (total_value - prev_value) / prev_value * 100
-            
-            if prev_spy and prev_spy > 0 and spy_price > 0:
-                spy_return = (spy_price - prev_spy) / prev_spy * 100
-                alpha = daily_return - spy_return
-            
-            # 행 데이터
-            row = [
-                today,
-                round(total_value, 2),
-                round(cash, 2),
-                round(stocks_value, 2),
-                round(daily_return, 2),
-                round(spy_price, 2),
-                round(spy_return, 2),
-                round(alpha, 2)
-            ]
-            
-            if today_row_idx:
-                # 오늘 데이터 업데이트
-                ws.update(f"A{today_row_idx}:H{today_row_idx}", [row])
-                print(f"✅ Daily_Value 업데이트: ${total_value:,.2f}")
-            else:
-                # 새 행 추가
-                ws.append_row(row)
-                print(f"✅ Daily_Value 저장: ${total_value:,.2f}")
-            
+
+            # 이전 데이터에서 수익률 계산
+            daily_df = self.sheets.load_daily_values()
+            prev_value = INITIAL_CAPITAL
+            prev_spy = spy_price
+            if len(daily_df) > 0:
+                try:
+                    prev_value = float(daily_df.iloc[-1]["Total_Value"])
+                    prev_spy = float(daily_df.iloc[-1]["SPY_Price"])
+                except:
+                    pass
+
+            daily_return = (total_value - prev_value) / prev_value * 100 if prev_value > 0 else 0
+            spy_return = (spy_price - prev_spy) / prev_spy * 100 if prev_spy > 0 else 0
+            alpha = daily_return - spy_return
+
+            daily_data = {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "total_value": round(total_value, 2),
+                "cash": round(cash, 2),
+                "stocks_value": round(stocks_value, 2),
+                "daily_return_pct": round(daily_return, 2),
+                "spy_price": round(spy_price, 2),
+                "spy_return_pct": round(spy_return, 2),
+                "alpha": round(alpha, 2)
+            }
+
+            self.sheets.save_daily_value(daily_data)
+            print(f"Daily value recorded: ${total_value:,.2f} ({daily_return:+.2f}%)")
+
         except Exception as e:
             print(f"⚠️ Daily_Value 저장 실패: {e}")
+
+    def update_performance(self, exchange_rate=1400):
+        """
+        전체 성과 업데이트 (모멘텀과 동일)
+        - Performance 시트 갱신
+        - 월간/연간 리포트 자동 업데이트
+
+        Args:
+            exchange_rate: 원/달러 환율 (세금 계산용)
+        """
+        if not self.sheets:
+            return
+
+        try:
+            import numpy as np
+
+            sync_result = self.sheets.sync_holdings_from_trades()
+            holdings = self.get_holdings()
+
+            # 포트폴리오 가치 계산
+            stocks_value = 0
+            if holdings:
+                import yfinance as yf
+                for symbol, info in holdings.items():
+                    try:
+                        ticker = yf.Ticker(symbol)
+                        hist = ticker.history(period='1d')
+                        price = float(hist['Close'].iloc[-1]) if not hist.empty else info['avg_price']
+                    except:
+                        price = info['avg_price']
+                    stocks_value += info['shares'] * price
+
+            cash = sync_result.get("cash", INITIAL_CAPITAL)
+            total_value = stocks_value + cash
+            total_return = (total_value - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+
+            trades_df = self.sheets.load_trades()
+            daily_df = self.sheets.load_daily_values()
+
+            # 기간 계산
+            days = 0
+            start_date = ""
+            if len(daily_df) > 0:
+                try:
+                    start_date = daily_df.iloc[0]["Date"]
+                    days = (datetime.now() - datetime.strptime(start_date, "%Y-%m-%d")).days
+                except:
+                    pass
+
+            years = days / 365 if days > 0 else 0
+            cagr = ((total_value / INITIAL_CAPITAL) ** (1 / years) - 1) * 100 if years > 0 else 0
+
+            # SPY 수익률
+            spy_return = 0
+            if len(daily_df) > 1:
+                try:
+                    first_spy = float(daily_df.iloc[0]["SPY_Price"])
+                    last_spy = float(daily_df.iloc[-1]["SPY_Price"])
+                    spy_return = (last_spy - first_spy) / first_spy * 100
+                except:
+                    pass
+
+            # MDD
+            mdd = 0
+            if len(daily_df) > 0:
+                try:
+                    values = daily_df["Total_Value"].astype(float)
+                    peak = values.cummax()
+                    drawdown = (values - peak) / peak * 100
+                    mdd = drawdown.min()
+                except:
+                    pass
+
+            # 승률 및 수수료/실현손익
+            win_rate = 0
+            total_trades = len(trades_df)
+            total_commission = 0
+            total_realized_pnl = 0
+
+            if total_trades > 0:
+                try:
+                    returns = trades_df["Return%"].astype(float)
+                    wins = (returns > 0).sum()
+                    win_rate = wins / total_trades * 100
+                    if "Commission" in trades_df.columns:
+                        total_commission = trades_df["Commission"].astype(float).sum()
+                    if "Realized_PnL" in trades_df.columns:
+                        total_realized_pnl = trades_df["Realized_PnL"].astype(float).sum()
+                except:
+                    pass
+
+            # Sharpe
+            sharpe = 0
+            if len(daily_df) > 1:
+                try:
+                    daily_returns = daily_df["Daily_Return%"].astype(float)
+                    if daily_returns.std() > 0:
+                        sharpe = (daily_returns.mean() * 252) / (daily_returns.std() * np.sqrt(252))
+                except:
+                    pass
+
+            # 세금 계산 (해외주식 양도소득세: 22%, 250만원 공제)
+            realized_pnl_krw = total_realized_pnl * exchange_rate
+            taxable_amount = max(0, realized_pnl_krw - 2500000)
+            est_tax = round(taxable_amount * 0.22)
+
+            metrics = {
+                "initial_capital": INITIAL_CAPITAL,
+                "current_value": total_value,
+                "total_return_pct": total_return,
+                "cagr": cagr,
+                "spy_return_pct": spy_return,
+                "alpha": total_return - spy_return,
+                "mdd": mdd,
+                "sharpe_ratio": sharpe,
+                "win_rate": win_rate,
+                "total_trades": total_trades,
+                "start_date": start_date,
+                "days": days,
+                "total_commission": round(total_commission, 2),
+                "total_realized_pnl": round(total_realized_pnl, 2),
+                "est_tax": est_tax
+            }
+
+            self.sheets.save_performance(metrics)
+            self.sheets.update_monthly_summary()
+            self.sheets.update_yearly_summary(exchange_rate)
+
+            print("=" * 60)
+            print("Performance Updated")
+            print("=" * 60)
+            print(f"Total Return: {total_return:+.2f}%")
+            print(f"SPY Return: {spy_return:+.2f}%")
+            print(f"Alpha: {total_return - spy_return:+.2f}%")
+            print(f"MDD: {mdd:.2f}%")
+            print(f"Win Rate: {win_rate:.1f}%")
+            print("=" * 60)
+
+        except Exception as e:
+            print(f"⚠️ Performance 업데이트 실패: {e}")
 
 
 # ============================================
@@ -1097,140 +1106,127 @@ def send_hybrid_rebalancing(rebalancing, total_capital, signal=None):
 
 def run_hybrid_weekly():
     """
-    Hybrid 주간 실행
-    - 동적 자본금: 현금 + 주식가치
+    Hybrid 주간 실행 (모멘텀과 동일한 구조)
+    - Holdings 동기화 (Trades 기반)
+    - 신호 생성
+    - 리밸런싱 계산 및 Telegram 알림
+    - Trades 시트에 거래 기록
+    - Daily_Value / Performance 업데이트
     """
     print("=" * 60)
     print("🤖 Hybrid 주간 실행")
     print("=" * 60)
     print(f"가중치: 모멘텀 {WEIGHT_MOMENTUM*100:.0f}% + AI {WEIGHT_AI*100:.0f}%")
-    
+
     # 1. Sheets 연결
     sheets = HybridSheetsManager()
-    
-    # 2. 신호 생성
+
+    # 2. Holdings 동기화 (Trades 기반) + Cash 계산
+    sync_result = sheets.sync_holdings()
+
+    # 3. 신호 생성
     signal = get_hybrid_signal()
-    
+
     if signal is None:
         print("❌ 신호 생성 실패")
         return
-    
-    # 3. 시장 필터링 체크 (모멘텀과 동일: HOLD)
+
+    # 4. 시장 필터링 체크 (모멘텀과 동일: HOLD)
     if signal.get('market_filter', False):
         print("\n⚠️ 시장 필터링 발동 - HOLD (기존 보유 유지)")
-        
+
         market_momentum = signal.get('market_momentum', 0)
-        
-        # Telegram 전송 (모멘텀과 동일 형식)
+
+        # Telegram 전송
         msg = f"⚠️ Hybrid HOLD 신호 ({datetime.now().strftime('%Y-%m-%d')})\n\n"
         msg += f"평균 1개월 수익률: {market_momentum:.4f}\n"
         msg += f"상태: 시장 하락 추세 ❌\n\n"
         msg += "→ 신규 매수 없음\n"
         msg += "→ 기존 보유 유지"
-        
+
         send_message(msg)
-        
+
         # Signal 저장
         sheets.save_signal(signal)
-        
+
         # Daily_Value 저장 (기존 보유 기준)
         portfolio = sheets.get_holdings()
+        cash = sync_result.get("cash", INITIAL_CAPITAL)
         if portfolio:
             import yfinance as yf
             symbols = list(portfolio.keys()) + ['SPY']
             current_prices = {}
-            for symbol in symbols:
+            for sym in symbols:
                 try:
-                    ticker = yf.Ticker(symbol)
+                    ticker = yf.Ticker(sym)
                     hist = ticker.history(period='1d')
                     if not hist.empty:
-                        current_prices[symbol] = hist['Close'].iloc[-1]
+                        current_prices[sym] = hist['Close'].iloc[-1]
                 except:
                     pass
-            
-            cash = sheets.get_cash()
             spy_price = current_prices.get('SPY', 0)
             sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
-        
+
+        # Performance 업데이트
+        sheets.update_performance()
+
         print("\n✅ Hybrid 주간 실행 완료 (HOLD)")
         return {'signal': signal, 'market_filter': True}
-    
-    # 4. 현재 포트폴리오 (Sheets에서 가져오기)
+
+    # 5. 현재 포트폴리오 (Trades 기반 동기화 결과 사용)
     portfolio = sheets.get_holdings()
-    
+
     # 현재 가격 추가
     for symbol in portfolio:
         if symbol in signal['prices']:
             portfolio[symbol]['current_price'] = signal['prices'][symbol]
         else:
             portfolio[symbol]['current_price'] = portfolio[symbol]['avg_price']
-    
+
     print(f"📊 현재 보유: {list(portfolio.keys()) if portfolio else '없음'}")
-    
-    # 5. 동적 자본금 계산 (현금 + 주식가치)
-    available_cash = sheets.get_cash()
+
+    # 6. 동적 자본금 계산 (현금 + 주식가치)
+    available_cash = sync_result.get("cash", INITIAL_CAPITAL)
     stocks_value = sum(
         info.get('shares', 0) * info.get('current_price', info.get('avg_price', 0))
         for info in portfolio.values()
     ) if portfolio else 0
-    
+
     total_capital = available_cash + stocks_value
     print(f"💰 동적 자본금: ${total_capital:,.2f} (현금 ${available_cash:,.2f} + 주식 ${stocks_value:,.2f})")
-    
-    # 6. 리밸런싱 계산 (동적 자본금 사용)
+
+    # 7. 리밸런싱 계산 (동적 자본금 사용)
     rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital, available_cash)
-    
-    # 7. 출력
+
+    # 8. 출력
     print_hybrid_rebalancing(rebalancing)
-    
-    # 8. Telegram 전송 (signal 포함)
+
+    # 9. Telegram 전송 (signal 포함)
     send_hybrid_rebalancing(rebalancing, total_capital, signal)
-    
-    # 9. Sheets 기록
+
+    # 10. Sheets 기록
     # 신호 저장
     sheets.save_signal(signal)
-    
-    # 거래 저장
+
+    # 거래 Trades 시트에 저장
     for action in rebalancing['actions']:
         if action['action'] != 'HOLD':
             sheets.save_trade(action)
-    
-    # Holdings 업데이트
-    sheets.update_holdings(rebalancing['actions'], signal['prices'])
-    
-    # 9. 현금 업데이트
-    # 매도 금액 입금
-    if rebalancing['summary']['total_sell'] > 0:
-        sheets.update_cash(
-            rebalancing['summary']['total_sell'], 
-            f"매도: {', '.join([a['symbol'] for a in rebalancing['actions'] if a['action'] in ['SELL', 'REDUCE']])}"
-        )
-    
-    # 매수 금액 출금
-    if rebalancing['summary']['total_buy'] > 0:
-        sheets.update_cash(
-            -rebalancing['summary']['total_buy'], 
-            f"매수: {', '.join([a['symbol'] for a in rebalancing['actions'] if a['action'] in ['BUY', 'ADD']])}"
-        )
-    
-    # 수수료 차감
-    total_commission = (rebalancing['summary']['total_buy'] + rebalancing['summary']['total_sell']) * BUY_COMMISSION
-    if total_commission > 0:
-        sheets.update_cash(-total_commission, "수수료")
-    
-    # 10. Daily_Value 저장
-    # 현재 현금 가져오기
-    cash = sheets.get_cash()
-    
-    # SPY 가격 가져오기
+
+    # 11. Holdings 동기화 (저장된 Trades 기반 재계산)
+    sync_result = sheets.sync_holdings()
+    cash = sync_result.get("cash", INITIAL_CAPITAL)
+
+    # 12. Daily_Value 저장
     spy_price = signal['prices'].get('SPY', 0)
-    
-    # 새 포트폴리오로 Daily_Value 저장
     new_holdings = sheets.get_holdings()
     sheets.save_daily_value(new_holdings, signal['prices'], cash, spy_price)
-    
+
+    # 13. Performance 업데이트 (월간/연간 포함)
+    sheets.update_performance()
+
     print("\n✅ Hybrid 주간 실행 완료!")
-    
+
     return {
         'signal': signal,
         'rebalancing': rebalancing
@@ -1301,57 +1297,53 @@ def check_stop_loss(holdings, current_prices, stop_loss_pct=STOP_LOSS):
 
 def run_hybrid_daily():
     """
-    Hybrid Daily 실행 (월,수,목,금)
-    - 손절 체크
+    Hybrid Daily 실행 (모멘텀과 동일한 구조)
+    - Holdings 동기화 (Trades 기반)
+    - 손절 체크 (알림 + Trades 기록)
     - 일일 가치 기록
-    - 동적 자본금 사용
+    - Performance 업데이트
     """
     print("=" * 60)
     print("🤖 Hybrid Daily 실행")
     print("=" * 60)
-    
+
     today = datetime.now().strftime('%Y-%m-%d')
-    
+
     # 1. Sheets 연결
     sheets = HybridSheetsManager()
-    
-    # 2. 현재 보유 종목 가져오기
+
+    # 2. Holdings 동기화 (Trades 기반) + Cash 계산
+    sync_result = sheets.sync_holdings()
+
+    # 3. 현재 보유 종목 가져오기
     holdings = sheets.get_holdings()
-    
+
     # 4. 현재 가격 가져오기 (보유종목 + SPY)
     symbols = list(holdings.keys()) + ['SPY'] if holdings else ['SPY']
     current_prices = get_current_prices(symbols)
-    
+
     spy_price = current_prices.get('SPY', 0)
     print(f"📈 SPY: ${spy_price:.2f}")
-    
+
     # 5. 보유 종목이 있으면 손절 체크
     if holdings:
         print(f"📊 보유 종목: {list(holdings.keys())}")
-        
+
         stop_loss_list = check_stop_loss(holdings, current_prices)
-        
+
         if stop_loss_list:
             print("\n🔴 손절 대상:")
             msg = f"🚨 Hybrid 손절 알림\n\n"
-            
-            total_stop_loss_amount = 0
-            
+
             for item in stop_loss_list:
                 print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
                 msg += f"🔴 {item['symbol']}\n"
                 msg += f"   매수가: ${item['avg_price']:.2f}\n"
                 msg += f"   현재가: ${item['current_price']:.2f}\n"
                 msg += f"   수익률: {item['return_pct']:.1f}%\n\n"
-                
-                # 손절 금액 계산
+
+                # STOP_LOSS Trade를 Trades 시트에 저장 (Holdings/Cash는 sync로 자동 반영)
                 sell_amount = item['shares'] * item['current_price']
-                total_stop_loss_amount += sell_amount
-                
-                # Holdings에서 제거
-                sheets.sheets.remove_holding(item['symbol'])
-                
-                # Trade 기록
                 sheets.save_trade({
                     'symbol': item['symbol'],
                     'action': 'STOP_LOSS',
@@ -1360,107 +1352,65 @@ def run_hybrid_daily():
                     'amount': sell_amount,
                     'return_pct': item['return_pct']
                 })
-            
-            # 현금 업데이트 (손절 매도 금액 입금)
-            if total_stop_loss_amount > 0:
-                sheets.update_cash(total_stop_loss_amount, f"손절 매도: {', '.join([i['symbol'] for i in stop_loss_list])}")
-                
-                # 수수료 차감
-                commission = total_stop_loss_amount * SELL_COMMISSION
-                sheets.update_cash(-commission, "손절 수수료")
-            
+
             # Telegram 전송
             send_message(msg)
-            
-            # 손절 후 Holdings 다시 로드
+
+            # 손절 후 Holdings/Cash 재동기화
+            sync_result = sheets.sync_holdings()
             holdings = sheets.get_holdings()
         else:
             print("\n✅ 손절 대상 없음")
     else:
         print("📊 보유 종목 없음 (현금 보유 중)")
-    
-    # 6. 현재 현금 가져오기
-    cash = sheets.get_cash()
-    
-    # 주식 가치 계산
-    stocks_value = 0
-    if holdings:
-        stocks_value = sum(
-            holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
-            for s in holdings
-        )
-    
-    # 총 포트폴리오 가치 (동적 자본금)
+
+    # 6. 현재 현금 및 포트폴리오 가치 계산
+    cash = sync_result.get("cash", INITIAL_CAPITAL)
+    stocks_value = sum(
+        holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
+        for s in holdings
+    ) if holdings else 0
     total_value = stocks_value + cash
     print(f"💰 포트폴리오: ${total_value:,.2f} (현금 ${cash:,.2f} + 주식 ${stocks_value:,.2f})")
-    
-    # 7. 이전 Daily_Value에서 수익률 계산 (오늘 제외)
+
+    # 7. Daily_Value 저장
+    sheets.save_daily_value(holdings, current_prices, cash, spy_price)
+
+    # 8. Performance 업데이트 (월간/연간 포함)
+    sheets.update_performance()
+
+    # 9. Daily Summary 텔레그램 전송
+    daily_df = sheets.sheets.load_daily_values()
     daily_return = 0
     spy_return = 0
     alpha = 0
-    prev_value = total_value  # 이전 값 없으면 현재 값 사용
+    if len(daily_df) > 1:
+        try:
+            daily_return = float(daily_df.iloc[-1]["Daily_Return%"])
+            spy_return = float(daily_df.iloc[-1]["SPY_Return%"])
+            alpha = float(daily_df.iloc[-1]["Alpha"])
+        except:
+            pass
 
-    # SPY 전일 종가: yfinance 5d 히스토리에서 직접 조회 (시트 기록 버그 영향 없음)
-    prev_spy = 0
-    try:
-        import yfinance as yf
-        spy_hist = yf.Ticker('SPY').history(period='5d')
-        if len(spy_hist) >= 2:
-            prev_spy = float(spy_hist['Close'].iloc[-2])
-            # spy_price도 최신 종가로 재확인 (기존 값이 0인 경우 대비)
-            if spy_price == 0:
-                spy_price = float(spy_hist['Close'].iloc[-1])
-    except Exception as e:
-        print(f"⚠️ SPY 전일 가격 조회 실패: {e}")
-
-    try:
-        ws = sheets.sheets.spreadsheet.worksheet("Daily_Value")
-        data = ws.get_all_values()
-
-        if len(data) > 1:
-            # 오늘 날짜가 아닌 마지막 행에서 전일 포트폴리오 가치 가져오기
-            for row in reversed(data[1:]):
-                if row[0] != today:
-                    prev_value = float(row[1]) if row[1] else total_value
-                    break
-
-            if prev_value > 0:
-                daily_return = (total_value - prev_value) / prev_value * 100
-
-            if prev_spy > 0 and spy_price > 0:
-                spy_return = (spy_price - prev_spy) / prev_spy * 100
-                alpha = daily_return - spy_return
-    except:
-        pass
-    
-    # 8. Daily_Value 저장
-    sheets.save_daily_value(holdings, current_prices, cash, spy_price)
-    
-    # 9. Daily Summary 텔레그램 전송
     msg = f"📊 Hybrid Daily Summary ({today})\n"
     msg += f"Portfolio: ${total_value:,.2f}\n"
     msg += f"Daily: {daily_return:+.2f}%\n"
     msg += f"SPY: {spy_return:+.2f}%\n"
     msg += f"Alpha: {alpha:+.2f}%\n\n"
-    
+
     if holdings:
         msg += "Holdings:\n"
         for symbol, info in holdings.items():
             shares = info.get('shares', 0)
             avg_price = info.get('avg_price', 0)
             current_price = current_prices.get(symbol, avg_price)
-            
-            if avg_price > 0:
-                return_pct = (current_price - avg_price) / avg_price * 100
-            else:
-                return_pct = 0
-            
+            return_pct = (current_price - avg_price) / avg_price * 100 if avg_price > 0 else 0
             msg += f"• {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
     else:
         msg += "Holdings: 없음 (현금 보유)"
-    
+
     send_message(msg)
-    
+
     print("\n✅ Hybrid Daily 실행 완료!")
 
 
