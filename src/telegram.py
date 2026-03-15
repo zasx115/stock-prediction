@@ -273,6 +273,114 @@ Capital: {capital_str}
     return send_message(text)
 
 
+def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=None):
+    """
+    Hybrid 매매 신호 메시지
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    weights_str = ""
+    if weight_momentum is not None and weight_ai is not None:
+        weights_str = f"\n가중치: M{weight_momentum*100:.0f}% + AI{weight_ai*100:.0f}%"
+
+    if signal.get("market_filter", False):
+        text = f"""<b>Hybrid HOLD Signal ({today})</b>
+Capital: ${total_capital:,.2f}{weights_str}
+Market: DOWN (Momentum: {signal.get("market_momentum", 0):.4f})
+
+매수 신호 없음"""
+    else:
+        picks_text = ""
+        for i, (symbol, score) in enumerate(zip(signal["picks"], signal["scores"])):
+            price = signal["prices"].get(symbol, 0)
+            alloc = signal["allocations"][i]
+            shares = int(total_capital * alloc / price) if price > 0 else 0
+            picks_text += f"{i+1}. {symbol} ({score:.4f}) ({alloc*100:.0f}%) - ${price:.2f} ({shares}주)\n"
+
+        text = f"""<b>Hybrid BUY Signal ({today})</b>
+Capital: ${total_capital:,.2f}{weights_str}
+
+<b>Picks:</b>
+{picks_text}"""
+
+    return send_message(text)
+
+
+def send_hybrid_rebalancing(rebalancing, total_capital, signal=None, weight_momentum=None, weight_ai=None):
+    """
+    Hybrid 리밸런싱 메시지
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    weights_str = ""
+    if weight_momentum is not None and weight_ai is not None:
+        weights_str = f"\n가중치: M{weight_momentum*100:.0f}% + AI{weight_ai*100:.0f}%"
+
+    actions = rebalancing.get("actions", [])
+
+    if not actions:
+        text = f"""<b>📊 Hybrid 리밸런싱 ({today})</b>
+Capital: ${total_capital:,.0f}{weights_str}
+{rebalancing.get("message", "매매 없음")}"""
+        return send_message(text)
+
+    # 선정 종목 (점수 포함)
+    picks_text = ""
+    if signal:
+        for i, (symbol, score) in enumerate(zip(signal["picks"], signal["scores"])):
+            price = signal["prices"].get(symbol, 0)
+            picks_text += f"{i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}\n"
+
+    # 액션별 분류
+    sells = [a for a in actions if a["action"] == "SELL"]
+    reduces = [a for a in actions if a["action"] == "REDUCE"]
+    holds = [a for a in actions if a["action"] == "HOLD"]
+    adds = [a for a in actions if a["action"] == "ADD"]
+    buys = [a for a in actions if a["action"] == "BUY"]
+
+    capital_str = f"${total_capital:,.0f}"
+
+    text = f"<b>📊 Hybrid 리밸런싱 ({today})</b>\n"
+    text += f"Capital: {capital_str}{weights_str}\n"
+
+    if picks_text:
+        text += f"\n<b>선정 종목:</b>\n{picks_text}"
+
+    if sells:
+        text += "\n<b>🔴 매도 (전량)</b>\n"
+        for a in sells:
+            profit = a.get("return_pct", 0)
+            text += f"• {a['symbol']} {a['shares']}주 @ ${a['price']:.2f} ({profit:+.1f}%)\n"
+
+    if reduces:
+        text += "\n<b>🟠 비중 축소</b>\n"
+        for a in reduces:
+            text += f"• {a['symbol']} -{a['shares']}주 @ ${a['price']:.2f}\n"
+
+    if holds:
+        text += "\n<b>⚪ 유지</b>\n"
+        for a in holds:
+            text += f"• {a['symbol']} {a['shares']}주\n"
+
+    if adds:
+        text += "\n<b>🟢 추가 매수</b>\n"
+        for a in adds:
+            text += f"• {a['symbol']} +{a['shares']}주 @ ${a['price']:.2f}\n"
+
+    if buys:
+        text += "\n<b>🟢 신규 매수</b>\n"
+        for a in buys:
+            text += f"• {a['symbol']} {a['shares']}주 @ ${a['price']:.2f}\n"
+
+    summary = rebalancing.get("summary", {})
+    text += f"""\n<b>💰 요약</b>
+매도 금액: ${summary.get('total_sell', 0):,.0f}
+매수 금액: ${summary.get('total_buy', 0):,.0f}
+현금 변화: ${summary.get('net_cash_change', 0):+,.0f}"""
+
+    return send_message(text)
+
+
 def send_trades(trades):
     """
     거래 실행 메시지 (수동 매매라 현재 미사용)

@@ -42,7 +42,13 @@ except ImportError:
     print("⚠️ Sheets 모듈 없음 (선택적)")
 
 # Telegram
-from telegram import send_message
+from telegram import (
+    send_hybrid_signal,
+    send_hybrid_rebalancing,
+    send_stop_loss,
+    send_daily_summary,
+    send_error
+)
 
 
 # ============================================
@@ -1004,103 +1010,6 @@ def print_hybrid_rebalancing(rebalancing):
 
 
 # ============================================
-# [7] Telegram 메시지 전송
-# ============================================
-
-def send_hybrid_signal(signal, total_capital):
-    """
-    Hybrid 신호 텔레그램 전송
-    """
-    if signal is None:
-        return
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    msg = f"🤖 Hybrid 신호 ({today})\n"
-    msg += f"Capital: ${total_capital:,.0f}\n"
-    msg += f"가중치: M{WEIGHT_MOMENTUM*100:.0f}% + AI{WEIGHT_AI*100:.0f}%\n\n"
-    
-    for i, (symbol, score) in enumerate(zip(signal['picks'], signal['scores'])):
-        price = signal['prices'].get(symbol, 0)
-        alloc = signal['allocations'][i]
-        shares = int(total_capital * alloc / price) if price > 0 else 0
-        
-        msg += f"{i+1}. {symbol}\n"
-        msg += f"   점수: {score:.4f}\n"
-        msg += f"   가격: ${price:.2f}\n"
-        msg += f"   비중: {alloc*100:.0f}% ({shares}주)\n\n"
-    
-    send_message(msg)
-
-
-def send_hybrid_rebalancing(rebalancing, total_capital, signal=None):
-    """
-    Hybrid 리밸런싱 텔레그램 전송
-    """
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    actions = rebalancing['actions']
-    summary = rebalancing['summary']
-    
-    msg = f"🤖 Hybrid 리밸런싱 ({today})\n"
-    msg += f"Capital: ${total_capital:,.0f}\n"
-    msg += f"가중치: M{WEIGHT_MOMENTUM*100:.0f}% + AI{WEIGHT_AI*100:.0f}%\n\n"
-    
-    # 선정 종목 (점수 포함)
-    if signal:
-        msg += "📊 선정 종목:\n"
-        for i, (symbol, score) in enumerate(zip(signal['picks'], signal['scores'])):
-            price = signal['prices'].get(symbol, 0)
-            msg += f"{i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}\n"
-        msg += "\n"
-    
-    # 액션별 분류
-    sells = [a for a in actions if a['action'] == 'SELL']
-    reduces = [a for a in actions if a['action'] == 'REDUCE']
-    holds = [a for a in actions if a['action'] == 'HOLD']
-    adds = [a for a in actions if a['action'] == 'ADD']
-    buys = [a for a in actions if a['action'] == 'BUY']
-    
-    if sells:
-        msg += "🔴 매도 (전량)\n"
-        for a in sells:
-            ret = a.get('return_pct', 0)
-            msg += f"• {a['symbol']} {a['shares']}주 @ ${a['price']:.2f} ({ret:+.1f}%)\n"
-        msg += "\n"
-    
-    if reduces:
-        msg += "🟠 비중 축소\n"
-        for a in reduces:
-            msg += f"• {a['symbol']} -{a['shares']}주 @ ${a['price']:.2f}\n"
-        msg += "\n"
-    
-    if holds:
-        msg += "⚪ 유지\n"
-        for a in holds:
-            msg += f"• {a['symbol']} {a['shares']}주\n"
-        msg += "\n"
-    
-    if adds:
-        msg += "🟢 추가 매수\n"
-        for a in adds:
-            msg += f"• {a['symbol']} +{a['shares']}주 @ ${a['price']:.2f}\n"
-        msg += "\n"
-    
-    if buys:
-        msg += "🟢 신규 매수\n"
-        for a in buys:
-            msg += f"• {a['symbol']} {a['shares']}주 @ ${a['price']:.2f}\n"
-        msg += "\n"
-    
-    msg += "💰 요약\n"
-    msg += f"매도: ${summary['total_sell']:,.0f}\n"
-    msg += f"매수: ${summary['total_buy']:,.0f}\n"
-    msg += f"현금: ${summary['net_cash_change']:+,.0f}"
-    
-    send_message(msg)
-
-
-# ============================================
 # [8] 메인 실행
 # ============================================
 
@@ -1135,16 +1044,8 @@ def run_hybrid_weekly():
     if signal.get('market_filter', False):
         print("\n⚠️ 시장 필터링 발동 - HOLD (기존 보유 유지)")
 
-        market_momentum = signal.get('market_momentum', 0)
-
         # Telegram 전송
-        msg = f"⚠️ Hybrid HOLD 신호 ({datetime.now().strftime('%Y-%m-%d')})\n\n"
-        msg += f"평균 1개월 수익률: {market_momentum:.4f}\n"
-        msg += f"상태: 시장 하락 추세 ❌\n\n"
-        msg += "→ 신규 매수 없음\n"
-        msg += "→ 기존 보유 유지"
-
-        send_message(msg)
+        send_hybrid_signal(signal, INITIAL_CAPITAL, WEIGHT_MOMENTUM, WEIGHT_AI)
 
         # Signal 저장
         sheets.save_signal(signal)
@@ -1202,7 +1103,7 @@ def run_hybrid_weekly():
     print_hybrid_rebalancing(rebalancing)
 
     # 9. Telegram 전송 (signal 포함)
-    send_hybrid_rebalancing(rebalancing, total_capital, signal)
+    send_hybrid_rebalancing(rebalancing, total_capital, signal, WEIGHT_MOMENTUM, WEIGHT_AI)
 
     # 10. Sheets 기록
     # 신호 저장
@@ -1333,14 +1234,9 @@ def run_hybrid_daily():
 
         if stop_loss_list:
             print("\n🔴 손절 대상:")
-            msg = f"🚨 Hybrid 손절 알림\n\n"
-
             for item in stop_loss_list:
                 print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
-                msg += f"🔴 {item['symbol']}\n"
-                msg += f"   매수가: ${item['avg_price']:.2f}\n"
-                msg += f"   현재가: ${item['current_price']:.2f}\n"
-                msg += f"   수익률: {item['return_pct']:.1f}%\n\n"
+                item['profit_loss'] = item['shares'] * (item['current_price'] - item['avg_price'])
 
                 # STOP_LOSS Trade를 Trades 시트에 저장 (Holdings/Cash는 sync로 자동 반영)
                 sell_amount = item['shares'] * item['current_price']
@@ -1354,7 +1250,7 @@ def run_hybrid_daily():
                 })
 
             # Telegram 전송
-            send_message(msg)
+            send_stop_loss(stop_loss_list)
 
             # 손절 후 Holdings/Cash 재동기화
             sync_result = sheets.sync_holdings()
@@ -1392,24 +1288,30 @@ def run_hybrid_daily():
         except:
             pass
 
-    msg = f"📊 Hybrid Daily Summary ({today})\n"
-    msg += f"Portfolio: ${total_value:,.2f}\n"
-    msg += f"Daily: {daily_return:+.2f}%\n"
-    msg += f"SPY: {spy_return:+.2f}%\n"
-    msg += f"Alpha: {alpha:+.2f}%\n\n"
+    holdings_detail = []
+    for symbol, info in holdings.items():
+        avg_price = info.get('avg_price', 0)
+        current_price = current_prices.get(symbol, avg_price)
+        return_pct = (current_price - avg_price) / avg_price * 100 if avg_price > 0 else 0
+        holdings_detail.append({
+            'symbol': symbol,
+            'shares': info.get('shares', 0),
+            'profit_loss_pct': return_pct
+        })
 
-    if holdings:
-        msg += "Holdings:\n"
-        for symbol, info in holdings.items():
-            shares = info.get('shares', 0)
-            avg_price = info.get('avg_price', 0)
-            current_price = current_prices.get(symbol, avg_price)
-            return_pct = (current_price - avg_price) / avg_price * 100 if avg_price > 0 else 0
-            msg += f"• {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
-    else:
-        msg += "Holdings: 없음 (현금 보유)"
-
-    send_message(msg)
+    daily_data = {
+        'date': today,
+        'daily_return_pct': daily_return,
+        'spy_return_pct': spy_return,
+        'alpha': alpha
+    }
+    portfolio_value = {
+        'total': total_value,
+        'cash': cash,
+        'stocks': stocks_value,
+        'holdings_detail': holdings_detail
+    }
+    send_daily_summary(daily_data, portfolio_value)
 
     print("\n✅ Hybrid Daily 실행 완료!")
 
@@ -1428,6 +1330,6 @@ if __name__ == "__main__":
         
         if signal:
             print("\n✅ 신호 생성 성공!")
-            send_hybrid_signal(signal, INITIAL_CAPITAL)
+            send_hybrid_signal(signal, INITIAL_CAPITAL, WEIGHT_MOMENTUM, WEIGHT_AI)
     except Exception as e:
         print(f"❌ 에러: {e}")
