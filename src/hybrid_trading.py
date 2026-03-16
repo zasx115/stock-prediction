@@ -44,6 +44,7 @@ except ImportError:
 # Telegram
 from telegram import (
     send_hybrid_signal,
+    send_hybrid_portfolio,
     send_hybrid_rebalancing,
     send_stop_loss,
     send_daily_summary,
@@ -1053,6 +1054,8 @@ def run_hybrid_weekly():
         # Daily_Value 저장 (기존 보유 기준)
         portfolio = sheets.get_holdings()
         cash = sync_result.get("cash", INITIAL_CAPITAL)
+        stocks_value = 0.0
+        holdings_detail = []
         if portfolio:
             import yfinance as yf
             symbols = list(portfolio.keys()) + ['SPY']
@@ -1067,6 +1070,26 @@ def run_hybrid_weekly():
                     pass
             spy_price = current_prices.get('SPY', 0)
             sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
+
+            for sym, data in portfolio.items():
+                shares = data.get('shares', 0)
+                avg_price = data.get('avg_price', 0)
+                cur_price = current_prices.get(sym, avg_price)
+                stocks_value += shares * cur_price
+                pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+                holdings_detail.append({
+                    "symbol": sym,
+                    "shares": shares,
+                    "profit_loss_pct": pnl_pct
+                })
+
+        # Telegram 전송 2: 포트폴리오
+        send_hybrid_portfolio({
+            "total": cash + stocks_value,
+            "cash": cash,
+            "stocks": stocks_value,
+            "holdings_detail": holdings_detail
+        })
 
         # Performance 업데이트
         sheets.update_performance()

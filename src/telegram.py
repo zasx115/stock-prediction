@@ -287,11 +287,9 @@ def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=No
     spy_price = signal.get("spy_price", signal.get("prices", {}).get("SPY", 0))
 
     if signal.get("market_filter", False):
-        text = f"""<b>Hybrid HOLD Signal ({today})</b>
-Market: DOWN (Momentum: {market_momentum:.4f})
-SPY: ${spy_price:.2f}{weights_str}
-
-매수 신호 없음"""
+        weights_line = f"가중치: M{weight_momentum*100:.0f}% + AI{weight_ai*100:.0f}%\n" if weight_momentum is not None and weight_ai is not None else ""
+        text = f"""<b>📊 Hybrid 리밸런싱 ({today})</b>
+{weights_line}HOLD 신호 - 매매 없음"""
     else:
         picks_text = ""
         for i, (symbol, score) in enumerate(zip(signal["picks"], signal["scores"])):
@@ -307,6 +305,37 @@ SPY: ${spy_price:.2f}{weights_str}
 
 <b>Picks:</b>
 {picks_text}"""
+
+    return send_message(text)
+
+
+def send_hybrid_portfolio(portfolio_value):
+    """
+    Hybrid 포트폴리오 상태 메시지
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    total = portfolio_value.get("total", 0)
+    cash = portfolio_value.get("cash", 0)
+    stocks = portfolio_value.get("stocks", 0)
+
+    holdings_text = ""
+    for h in portfolio_value.get("holdings_detail", []):
+        symbol = h.get("symbol", "")
+        shares = h.get("shares", 0)
+        return_pct = h.get("profit_loss_pct", 0)
+        holdings_text += f"- {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
+
+    if not holdings_text:
+        holdings_text = "- 보유 종목 없음\n"
+
+    text = f"""<b>Hybrid Portfolio Status ({today})</b>
+Total: ${total:,.2f}
+Cash: ${cash:,.2f}
+Stocks: ${stocks:,.2f}
+
+<b>Holdings:</b>
+{holdings_text}"""
 
     return send_message(text)
 
