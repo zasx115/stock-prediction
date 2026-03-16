@@ -1132,12 +1132,10 @@ def run_hybrid_weekly():
     # 신호 저장
     sheets.save_signal(signal)
 
-    # 거래 Trades 시트에 저장
-    for action in rebalancing['actions']:
-        if action['action'] != 'HOLD':
-            sheets.save_trade(action)
+    # 거래 Trades 시트에 저장 → 수동 입력 (모멘텀과 동일)
+    # 리밸런싱 안내는 Telegram으로 발송, 실제 매매 후 Trades에 직접 입력
 
-    # 11. Holdings 동기화 (저장된 Trades 기반 재계산)
+    # 11. Holdings 동기화 (Trades 기반 재계산)
     sync_result = sheets.sync_holdings()
     cash = sync_result.get("cash", INITIAL_CAPITAL)
 
@@ -1261,23 +1259,9 @@ def run_hybrid_daily():
                 print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
                 item['profit_loss'] = item['shares'] * (item['current_price'] - item['avg_price'])
 
-                # STOP_LOSS Trade를 Trades 시트에 저장 (Holdings/Cash는 sync로 자동 반영)
-                sell_amount = item['shares'] * item['current_price']
-                sheets.save_trade({
-                    'symbol': item['symbol'],
-                    'action': 'STOP_LOSS',
-                    'shares': item['shares'],
-                    'price': item['current_price'],
-                    'amount': sell_amount,
-                    'return_pct': item['return_pct']
-                })
-
-            # Telegram 전송
+            # Telegram 전송 (알림만 - 실제 매도는 수동, 모멘텀과 동일)
             send_stop_loss(stop_loss_list)
-
-            # 손절 후 Holdings/Cash 재동기화
-            sync_result = sheets.sync_holdings()
-            holdings = sheets.get_holdings()
+            print("→ 한투 앱에서 수동 매도 후 Trades에 직접 입력 필요!")
         else:
             print("\n✅ 손절 대상 없음")
     else:
