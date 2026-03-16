@@ -288,7 +288,6 @@ def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=No
 
     if signal.get("market_filter", False):
         text = f"""<b>Hybrid HOLD Signal ({today})</b>
-Capital: ${total_capital:,.2f}
 Market: DOWN (Momentum: {market_momentum:.4f})
 SPY: ${spy_price:.2f}{weights_str}
 
