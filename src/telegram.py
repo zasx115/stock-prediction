@@ -275,7 +275,7 @@ Capital: {capital_str}
 
 def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=None):
     """
-    Hybrid 매매 신호 메시지
+    Hybrid 매매 신호 메시지 (모멘텀 포맷 기반)
     """
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -283,10 +283,14 @@ def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=No
     if weight_momentum is not None and weight_ai is not None:
         weights_str = f"\n가중치: M{weight_momentum*100:.0f}% + AI{weight_ai*100:.0f}%"
 
+    market_momentum = signal.get("market_momentum", 0)
+    spy_price = signal.get("spy_price", signal.get("prices", {}).get("SPY", 0))
+
     if signal.get("market_filter", False):
         text = f"""<b>Hybrid HOLD Signal ({today})</b>
-Capital: ${total_capital:,.2f}{weights_str}
-Market: DOWN (Momentum: {signal.get("market_momentum", 0):.4f})
+Capital: ${total_capital:,.2f}
+Market: DOWN (Momentum: {market_momentum:.4f})
+SPY: ${spy_price:.2f}{weights_str}
 
 매수 신호 없음"""
     else:
@@ -298,7 +302,9 @@ Market: DOWN (Momentum: {signal.get("market_momentum", 0):.4f})
             picks_text += f"{i+1}. {symbol} ({score:.4f}) ({alloc*100:.0f}%) - ${price:.2f} ({shares}주)\n"
 
         text = f"""<b>Hybrid BUY Signal ({today})</b>
-Capital: ${total_capital:,.2f}{weights_str}
+Capital: ${total_capital:,.2f}
+Market: UP (Momentum: {market_momentum:.4f})
+SPY: ${spy_price:.2f}{weights_str}
 
 <b>Picks:</b>
 {picks_text}"""
