@@ -125,17 +125,20 @@ Stocks: ${stocks:,.2f}
     return send_message(text)
 
 
-def send_daily_summary(daily_data, portfolio_value):
+def send_daily_summary(daily_data, portfolio_value, signal=None):
     """
     일일 요약 메시지
+
+    Args:
+        signal: sheets.get_latest_signal() 반환값 (없으면 생략)
     """
     date = daily_data.get("date", datetime.now().strftime("%Y-%m-%d"))
-    
+
     total = portfolio_value.get("total", 0)
     daily_return = daily_data.get("daily_return_pct", 0)
     spy_return = daily_data.get("spy_return_pct", 0)
     alpha = daily_data.get("alpha", 0)
-    
+
     # Holdings 정보
     holdings_text = ""
     for h in portfolio_value.get("holdings_detail", []):
@@ -143,19 +146,49 @@ def send_daily_summary(daily_data, portfolio_value):
         shares = h.get("shares", 0)
         return_pct = h.get("profit_loss_pct", 0)
         holdings_text += f"- {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
-    
+
     if not holdings_text:
         holdings_text = "- 보유 종목 없음\n"
-    
+
+    # 시그널 섹션
+    signal_text = ""
+    if signal:
+        sig_type = signal.get("signal", "")
+        sig_date = signal.get("date", "")
+        market_trend = signal.get("market_trend", "")
+        market_momentum = signal.get("market_momentum", "")
+        picks = signal.get("picks", [])
+        allocations = signal.get("allocations", "")
+        scores = signal.get("scores", "")
+
+        if sig_type == "BUY":
+            alloc_list = [a.strip() for a in allocations.split(",") if a.strip()]
+            score_list = [s.strip() for s in scores.split(",") if s.strip()]
+            picks_text = ""
+            for i, sym in enumerate(picks):
+                alloc = alloc_list[i] if i < len(alloc_list) else ""
+                score = score_list[i] if i < len(score_list) else ""
+                picks_text += f"  {i+1}. {sym} ({alloc}) score:{score}\n"
+            signal_text = (
+                f"\n<b>📊 현재 시그널 ({sig_date})</b>\n"
+                f"신호: BUY | 마켓: {market_trend} ({market_momentum})\n"
+                f"{picks_text}"
+            )
+        else:
+            signal_text = (
+                f"\n<b>📊 현재 시그널 ({sig_date})</b>\n"
+                f"신호: HOLD | 마켓: {market_trend} ({market_momentum})\n"
+            )
+
     text = f"""<b>Daily Summary ({date})</b>
 Portfolio: ${total:,.2f}
 Daily: {daily_return:+.2f}%
 SPY: {spy_return:+.2f}%
 Alpha: {alpha:+.2f}%
-
+{signal_text}
 <b>Holdings:</b>
 {holdings_text}"""
-    
+
     return send_message(text)
 
 

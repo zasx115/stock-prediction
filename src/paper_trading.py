@@ -782,7 +782,8 @@ def run_daily(sheets=None):
                 "stocks": portfolio["stocks_value"],
                 "holdings_detail": portfolio["holdings"]
             }
-            send_daily_summary(daily_data, port_value)
+            latest_signal = sheets.get_latest_signal()
+            send_daily_summary(daily_data, port_value, signal=latest_signal)
         
     except Exception as e:
         print(f"Error: {e}")

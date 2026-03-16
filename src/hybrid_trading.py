@@ -1318,7 +1318,8 @@ def run_hybrid_daily():
         'stocks': stocks_value,
         'holdings_detail': holdings_detail
     }
-    send_daily_summary(daily_data, portfolio_value)
+    latest_signal = sheets.sheets.get_latest_signal()
+    send_daily_summary(daily_data, portfolio_value, signal=latest_signal)
 
     print("\n✅ Hybrid Daily 실행 완료!")
 

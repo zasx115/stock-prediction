@@ -499,13 +499,31 @@ class SheetsManager:
         """Load all signals"""
         ws = self._get_worksheet(SHEET_SIGNALS)
         data = ws.get_all_values()
-        
+
         if len(data) <= 1:
             return pd.DataFrame(columns=HEADERS[SHEET_SIGNALS])
-        
+
         df = pd.DataFrame(data[1:], columns=data[0])
         print(f"Signals loaded ({len(df)} rows)")
         return df
+
+    def get_latest_signal(self):
+        """Signals 시트에서 가장 최근 시그널 반환"""
+        df = self.load_signals()
+        if df.empty:
+            return None
+        row = df.iloc[-1]
+        return {
+            "timestamp": row.get("Timestamp", ""),
+            "date": row.get("Analysis_Date", ""),
+            "signal": row.get("Signal", ""),
+            "picks": [p.strip() for p in row.get("Picks", "").split(",") if p.strip()],
+            "scores": row.get("Scores", ""),
+            "allocations": row.get("Allocations", ""),
+            "market_momentum": row.get("Market_Momentum", ""),
+            "spy_price": row.get("SPY_Price", ""),
+            "market_trend": row.get("Market_Trend", ""),
+        }
     
     
     # ============================================
