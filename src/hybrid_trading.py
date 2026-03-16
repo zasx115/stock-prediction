@@ -1318,8 +1318,14 @@ def run_hybrid_daily():
         'stocks': stocks_value,
         'holdings_detail': holdings_detail
     }
-    latest_signal = sheets.sheets.get_latest_signal()
-    send_daily_summary(daily_data, portfolio_value, signal=latest_signal)
+    ref_signal = get_hybrid_signal()
+    if ref_signal:
+        is_hold = ref_signal.get('market_filter', False) or not ref_signal.get('picks')
+        ref_signal['signal'] = "HOLD" if is_hold else "BUY"
+        ref_signal['market_trend'] = "DOWN" if is_hold else "UP"
+        if 'date' not in ref_signal:
+            ref_signal['date'] = today
+    send_daily_summary(daily_data, portfolio_value, signal=ref_signal)
 
     print("\n✅ Hybrid Daily 실행 완료!")
 

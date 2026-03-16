@@ -150,34 +150,35 @@ def send_daily_summary(daily_data, portfolio_value, signal=None):
     if not holdings_text:
         holdings_text = "- 보유 종목 없음\n"
 
-    # 시그널 섹션
+    # 시그널 섹션 (참고용 - 매매와 무관)
     signal_text = ""
     if signal:
         sig_type = signal.get("signal", "")
         sig_date = signal.get("date", "")
+        if hasattr(sig_date, "strftime"):
+            sig_date = sig_date.strftime("%Y-%m-%d")
         market_trend = signal.get("market_trend", "")
-        market_momentum = signal.get("market_momentum", "")
+        market_momentum = signal.get("market_momentum", 0)
         picks = signal.get("picks", [])
-        allocations = signal.get("allocations", "")
-        scores = signal.get("scores", "")
+        allocations = signal.get("allocations", [])
+        scores = signal.get("scores", [])
 
         if sig_type == "BUY":
-            alloc_list = [a.strip() for a in allocations.split(",") if a.strip()]
-            score_list = [s.strip() for s in scores.split(",") if s.strip()]
             picks_text = ""
             for i, sym in enumerate(picks):
-                alloc = alloc_list[i] if i < len(alloc_list) else ""
-                score = score_list[i] if i < len(score_list) else ""
-                picks_text += f"  {i+1}. {sym} ({alloc}) score:{score}\n"
+                alloc = allocations[i] if i < len(allocations) else 0
+                score = scores[i] if i < len(scores) else 0
+                picks_text += f"  {i+1}. {sym} ({alloc*100:.0f}%) score:{score:.4f}\n"
             signal_text = (
-                f"\n<b>📊 현재 시그널 ({sig_date})</b>\n"
-                f"신호: BUY | 마켓: {market_trend} ({market_momentum})\n"
-                f"{picks_text}"
+                f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
+                f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
+                f"신호: BUY\n{picks_text}"
             )
         else:
             signal_text = (
-                f"\n<b>📊 현재 시그널 ({sig_date})</b>\n"
-                f"신호: HOLD | 마켓: {market_trend} ({market_momentum})\n"
+                f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
+                f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
+                f"신호: HOLD\n"
             )
 
     text = f"""<b>Daily Summary ({date})</b>
