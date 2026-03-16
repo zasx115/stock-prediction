@@ -612,9 +612,12 @@ class SheetsManager:
         if not monthly_df.empty:
             existing_months = monthly_df["Year_Month"].tolist()
         
-        # 월별 집계
+        # 월별 집계 (완료된 달만 저장 - 현재 달 제외)
+        current_ym = datetime.now().strftime("%Y-%m")
         saved_count = 0
         for ym in daily_df["Year_Month"].unique():
+            if ym >= current_ym:
+                continue
             if ym in existing_months:
                 continue
             
@@ -746,9 +749,12 @@ class SheetsManager:
         if not yearly_df.empty:
             existing_years = yearly_df["Year"].astype(str).tolist()
         
-        # 연도별 집계
+        # 연도별 집계 (완료된 연도만 저장 - 현재 연도 제외)
+        current_year = str(datetime.now().year)
         saved_count = 0
         for year in daily_df["Year"].unique():
+            if str(year) >= current_year:
+                continue
             if str(year) in existing_years:
                 continue
             
