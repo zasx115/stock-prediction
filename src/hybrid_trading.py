@@ -44,6 +44,7 @@ except ImportError:
 # Telegram
 from telegram import (
     send_hybrid_signal,
+    send_hybrid_portfolio,
     send_hybrid_rebalancing,
     send_stop_loss,
     send_daily_summary,
@@ -517,7 +518,37 @@ class HybridTradingStrategy:
         print("\n✅ Hybrid 전략 준비 완료!")
         print(f"   시장 필터링: {'ON (평균 1개월 수익률 <= 0 → HOLD)' if self.use_market_filter else 'OFF'}")
         print(f"   SPY 상관관계 필터: > {self.correlation_threshold}")
-    
+
+    def prepare_daily_momentum(self, price_df):
+        """
+        모멘텀 부분만 일별 데이터 기준으로 재계산 (AI 무관)
+
+        Tuesday 필터 없이 전일 종가 기준으로 매일 새로운 점수를 계산.
+        - 1개월: pct_change(21)  ← 21 거래일
+        - 3개월: pct_change(63)
+        - 6개월: pct_change(126)
+
+        prepare() 호출 이후에 실행하면 score_df / ret_1m 이 일별로 교체됨.
+        """
+        m = self.momentum_strategy
+
+        # 상관관계: 전체 일별 데이터 기준으로 재계산
+        self.correlation_df = m.calc_correlation(price_df)
+
+        # 일별 수익률
+        ret_1m = price_df.pct_change(21)
+        ret_3m = price_df.pct_change(63)
+        ret_6m = price_df.pct_change(126)
+
+        self.score_df = (
+            ret_1m * m.weight_1m
+            + ret_3m * m.weight_3m
+            + ret_6m * m.weight_6m
+        )
+        self.ret_1m = ret_1m
+
+        print("\n📅 일별 모멘텀으로 교체 완료 (pct_change 21/63/126 거래일)")
+
     def check_market_condition(self, date):
         """
         시장 상황 체크: 평균 1개월 수익률 (모멘텀과 동일)
@@ -813,6 +844,55 @@ def get_hybrid_signal():
     return result
 
 
+def get_hybrid_daily_ref_signal():
+    """
+    매일 참고용 하이브리드 신호 (전일 종가 기준)
+
+    get_hybrid_signal()과 동일하지만 모멘텀 부분만 다름:
+    - 모멘텀: Tuesday 필터 제거 → 전일 종가 기준 일별 pct_change(21/63/126)
+    - AI: 기존과 동일 (XGBoost 예측 그대로)
+    """
+    print("=" * 60)
+    print("Hybrid 일별 참고 신호 생성 (전일 종가 기준)")
+    print("=" * 60)
+
+    train_df, current_df, price_df, features = prepare_hybrid_data()
+
+    strategy = HybridTradingStrategy(use_market_filter=True)
+    strategy.prepare(train_df, price_df, features)
+
+    # 모멘텀만 일별로 교체 (AI 무관)
+    strategy.prepare_daily_momentum(price_df)
+
+    # 전일 종가 기준 (오늘 미완성 봉 제외)
+    today = pd.Timestamp(datetime.now().strftime('%Y-%m-%d'))
+    available_dates = sorted(current_df['date'].unique())
+
+    candidates = [d for d in available_dates if pd.Timestamp(d) < today]
+    latest_date = candidates[-1] if candidates else available_dates[-1]
+
+    print(f"\n기준일 (전일 종가): {latest_date}")
+
+    result = strategy.select_stocks(current_df, price_df, latest_date)
+
+    if result is None:
+        print("❌ 선정된 종목 없음")
+        return None
+
+    if result.get('market_filter', False):
+        print(f"\n⚠️ 시장 필터링 발동!")
+        print(f"   평균 1개월 수익률: {result.get('market_momentum', 0):.4f} <= 0")
+        return result
+
+    print(f"\n✅ 선정 종목:")
+    for i, (symbol, score) in enumerate(zip(result['picks'], result['scores'])):
+        price = result['prices'].get(symbol, 0)
+        alloc = result['allocations'][i]
+        print(f"  {i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}, 비중 {alloc*100:.0f}%")
+
+    return result
+
+
 # ============================================
 # [5] 리밸런싱 계산
 # ============================================
@@ -1053,6 +1133,8 @@ def run_hybrid_weekly():
         # Daily_Value 저장 (기존 보유 기준)
         portfolio = sheets.get_holdings()
         cash = sync_result.get("cash", INITIAL_CAPITAL)
+        stocks_value = 0.0
+        holdings_detail = []
         if portfolio:
             import yfinance as yf
             symbols = list(portfolio.keys()) + ['SPY']
@@ -1067,6 +1149,26 @@ def run_hybrid_weekly():
                     pass
             spy_price = current_prices.get('SPY', 0)
             sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
+
+            for sym, data in portfolio.items():
+                shares = data.get('shares', 0)
+                avg_price = data.get('avg_price', 0)
+                cur_price = current_prices.get(sym, avg_price)
+                stocks_value += shares * cur_price
+                pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+                holdings_detail.append({
+                    "symbol": sym,
+                    "shares": shares,
+                    "profit_loss_pct": pnl_pct
+                })
+
+        # Telegram 전송 2: 포트폴리오
+        send_hybrid_portfolio({
+            "total": cash + stocks_value,
+            "cash": cash,
+            "stocks": stocks_value,
+            "holdings_detail": holdings_detail
+        })
 
         # Performance 업데이트
         sheets.update_performance()
@@ -1109,12 +1211,10 @@ def run_hybrid_weekly():
     # 신호 저장
     sheets.save_signal(signal)
 
-    # 거래 Trades 시트에 저장
-    for action in rebalancing['actions']:
-        if action['action'] != 'HOLD':
-            sheets.save_trade(action)
+    # 거래 Trades 시트에 저장 → 수동 입력 (모멘텀과 동일)
+    # 리밸런싱 안내는 Telegram으로 발송, 실제 매매 후 Trades에 직접 입력
 
-    # 11. Holdings 동기화 (저장된 Trades 기반 재계산)
+    # 11. Holdings 동기화 (Trades 기반 재계산)
     sync_result = sheets.sync_holdings()
     cash = sync_result.get("cash", INITIAL_CAPITAL)
 
@@ -1238,23 +1338,9 @@ def run_hybrid_daily():
                 print(f"  • {item['symbol']}: {item['return_pct']:.1f}%")
                 item['profit_loss'] = item['shares'] * (item['current_price'] - item['avg_price'])
 
-                # STOP_LOSS Trade를 Trades 시트에 저장 (Holdings/Cash는 sync로 자동 반영)
-                sell_amount = item['shares'] * item['current_price']
-                sheets.save_trade({
-                    'symbol': item['symbol'],
-                    'action': 'STOP_LOSS',
-                    'shares': item['shares'],
-                    'price': item['current_price'],
-                    'amount': sell_amount,
-                    'return_pct': item['return_pct']
-                })
-
-            # Telegram 전송
+            # Telegram 전송 (알림만 - 실제 매도는 수동, 모멘텀과 동일)
             send_stop_loss(stop_loss_list)
-
-            # 손절 후 Holdings/Cash 재동기화
-            sync_result = sheets.sync_holdings()
-            holdings = sheets.get_holdings()
+            print("→ 한투 앱에서 수동 매도 후 Trades에 직접 입력 필요!")
         else:
             print("\n✅ 손절 대상 없음")
     else:
@@ -1311,7 +1397,15 @@ def run_hybrid_daily():
         'stocks': stocks_value,
         'holdings_detail': holdings_detail
     }
-    send_daily_summary(daily_data, portfolio_value)
+    ref_signal = get_hybrid_signal()
+    if ref_signal:
+        is_hold = ref_signal.get('market_filter', False) or not ref_signal.get('picks')
+        ref_signal['signal'] = "HOLD" if is_hold else "BUY"
+        ref_signal['market_trend'] = "DOWN" if is_hold else "UP"
+        if 'date' not in ref_signal:
+            ref_signal['date'] = today
+        sheets.save_signal(ref_signal)
+    send_daily_summary(daily_data, portfolio_value, signal=ref_signal)
 
     print("\n✅ Hybrid Daily 실행 완료!")
 

@@ -499,13 +499,31 @@ class SheetsManager:
         """Load all signals"""
         ws = self._get_worksheet(SHEET_SIGNALS)
         data = ws.get_all_values()
-        
+
         if len(data) <= 1:
             return pd.DataFrame(columns=HEADERS[SHEET_SIGNALS])
-        
+
         df = pd.DataFrame(data[1:], columns=data[0])
         print(f"Signals loaded ({len(df)} rows)")
         return df
+
+    def get_latest_signal(self):
+        """Signals 시트에서 가장 최근 시그널 반환"""
+        df = self.load_signals()
+        if df.empty:
+            return None
+        row = df.iloc[-1]
+        return {
+            "timestamp": row.get("Timestamp", ""),
+            "date": row.get("Analysis_Date", ""),
+            "signal": row.get("Signal", ""),
+            "picks": [p.strip() for p in row.get("Picks", "").split(",") if p.strip()],
+            "scores": row.get("Scores", ""),
+            "allocations": row.get("Allocations", ""),
+            "market_momentum": row.get("Market_Momentum", ""),
+            "spy_price": row.get("SPY_Price", ""),
+            "market_trend": row.get("Market_Trend", ""),
+        }
     
     
     # ============================================
@@ -612,9 +630,12 @@ class SheetsManager:
         if not monthly_df.empty:
             existing_months = monthly_df["Year_Month"].tolist()
         
-        # 월별 집계
+        # 월별 집계 (완료된 달만 저장 - 현재 달 제외)
+        current_ym = datetime.now().strftime("%Y-%m")
         saved_count = 0
         for ym in daily_df["Year_Month"].unique():
+            if ym >= current_ym:
+                continue
             if ym in existing_months:
                 continue
             
@@ -746,9 +767,12 @@ class SheetsManager:
         if not yearly_df.empty:
             existing_years = yearly_df["Year"].astype(str).tolist()
         
-        # 연도별 집계
+        # 연도별 집계 (완료된 연도만 저장 - 현재 연도 제외)
+        current_year = str(datetime.now().year)
         saved_count = 0
         for year in daily_df["Year"].unique():
+            if str(year) >= current_year:
+                continue
             if str(year) in existing_years:
                 continue
             

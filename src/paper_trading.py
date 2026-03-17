@@ -225,6 +225,87 @@ def get_today_signal(strategy=None):
     }
 
 
+def get_daily_ref_signal(strategy=None):
+    """
+    매일 참고용 시그널 (전일 종가 기준, 일별 모멘텀)
+
+    화요일 공식 시그널과 달리 Tuesday 필터 없이
+    전일 종가 기준으로 매일 스코어를 새로 계산.
+    - 1개월: pct_change(21)  ← 21 거래일
+    - 3개월: pct_change(63)
+    - 6개월: pct_change(126)
+    """
+    if strategy is None:
+        strategy = CustomStrategy()
+
+    sp500 = get_sp500_list()
+    symbols = sp500["symbol"].tolist()
+    if "SPY" not in symbols:
+        symbols.append("SPY")
+
+    df = download_recent_data(symbols)
+    if df.empty:
+        return {"signal": "ERROR", "message": "Download failed"}
+
+    # 전체 일별 종가 (Tuesday 필터 없음)
+    price_df = prepare_price_data(df)
+    if price_df.empty:
+        return {"signal": "ERROR", "message": "No price data"}
+
+    # 전일 종가 기준 (오늘 미완성 봉 제외)
+    price_df = price_df.iloc[:-1]
+    if price_df.empty:
+        return {"signal": "ERROR", "message": "No previous day data"}
+
+    latest_date = price_df.index[-1]
+
+    # 일별 모멘텀 스코어 계산
+    ret_1m = price_df.pct_change(21)
+    ret_3m = price_df.pct_change(63)
+    ret_6m = price_df.pct_change(126)
+    score_df = (
+        ret_1m * strategy.weight_1m
+        + ret_3m * strategy.weight_3m
+        + ret_6m * strategy.weight_6m
+    )
+
+    # 상관관계는 전체 일별 데이터로 계산
+    correlation_df = strategy.calc_correlation(price_df)
+
+    market_momentum = ret_1m.loc[latest_date].mean() if latest_date in ret_1m.index else 0
+
+    result = strategy.select_stocks(score_df, correlation_df, latest_date, ret_1m)
+    spy_price = get_spy_price()
+
+    if result is None:
+        return {
+            "date": latest_date,
+            "signal": "HOLD",
+            "picks": [],
+            "scores": [],
+            "allocations": [],
+            "prices": {},
+            "market_momentum": market_momentum,
+            "spy_price": spy_price,
+            "market_trend": "DOWN",
+        }
+
+    picks = result["picks"]
+    prices = get_current_prices(picks)
+
+    return {
+        "date": latest_date,
+        "signal": "BUY",
+        "picks": picks,
+        "scores": result["scores"],
+        "allocations": result["allocations"],
+        "prices": prices,
+        "market_momentum": market_momentum,
+        "spy_price": spy_price,
+        "market_trend": "UP",
+    }
+
+
 # ============================================
 # Portfolio Management (시트 기반)
 # ============================================
@@ -782,7 +863,9 @@ def run_daily(sheets=None):
                 "stocks": portfolio["stocks_value"],
                 "holdings_detail": portfolio["holdings"]
             }
-            send_daily_summary(daily_data, port_value)
+            ref_signal = get_daily_ref_signal()
+            sheets.save_signal(ref_signal)
+            send_daily_summary(daily_data, port_value, signal=ref_signal)
         
     except Exception as e:
         print(f"Error: {e}")

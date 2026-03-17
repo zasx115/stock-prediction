@@ -125,17 +125,20 @@ Stocks: ${stocks:,.2f}
     return send_message(text)
 
 
-def send_daily_summary(daily_data, portfolio_value):
+def send_daily_summary(daily_data, portfolio_value, signal=None):
     """
     일일 요약 메시지
+
+    Args:
+        signal: sheets.get_latest_signal() 반환값 (없으면 생략)
     """
     date = daily_data.get("date", datetime.now().strftime("%Y-%m-%d"))
-    
+
     total = portfolio_value.get("total", 0)
     daily_return = daily_data.get("daily_return_pct", 0)
     spy_return = daily_data.get("spy_return_pct", 0)
     alpha = daily_data.get("alpha", 0)
-    
+
     # Holdings 정보
     holdings_text = ""
     for h in portfolio_value.get("holdings_detail", []):
@@ -143,19 +146,50 @@ def send_daily_summary(daily_data, portfolio_value):
         shares = h.get("shares", 0)
         return_pct = h.get("profit_loss_pct", 0)
         holdings_text += f"- {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
-    
+
     if not holdings_text:
         holdings_text = "- 보유 종목 없음\n"
-    
+
+    # 시그널 섹션 (참고용 - 매매와 무관)
+    signal_text = ""
+    if signal:
+        sig_type = signal.get("signal", "")
+        sig_date = signal.get("date", "")
+        if hasattr(sig_date, "strftime"):
+            sig_date = sig_date.strftime("%Y-%m-%d")
+        market_trend = signal.get("market_trend", "")
+        market_momentum = signal.get("market_momentum", 0)
+        picks = signal.get("picks", [])
+        allocations = signal.get("allocations", [])
+        scores = signal.get("scores", [])
+
+        if sig_type == "BUY":
+            picks_text = ""
+            for i, sym in enumerate(picks):
+                alloc = allocations[i] if i < len(allocations) else 0
+                score = scores[i] if i < len(scores) else 0
+                picks_text += f"  {i+1}. {sym} ({alloc*100:.0f}%) score:{score:.4f}\n"
+            signal_text = (
+                f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
+                f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
+                f"신호: BUY\n{picks_text}"
+            )
+        else:
+            signal_text = (
+                f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
+                f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
+                f"신호: HOLD\n"
+            )
+
     text = f"""<b>Daily Summary ({date})</b>
 Portfolio: ${total:,.2f}
 Daily: {daily_return:+.2f}%
 SPY: {spy_return:+.2f}%
 Alpha: {alpha:+.2f}%
-
+{signal_text}
 <b>Holdings:</b>
 {holdings_text}"""
-    
+
     return send_message(text)
 
 
@@ -287,11 +321,9 @@ def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=No
     spy_price = signal.get("spy_price", signal.get("prices", {}).get("SPY", 0))
 
     if signal.get("market_filter", False):
-        text = f"""<b>Hybrid HOLD Signal ({today})</b>
-Market: DOWN (Momentum: {market_momentum:.4f})
-SPY: ${spy_price:.2f}{weights_str}
-
-매수 신호 없음"""
+        weights_line = f"가중치: M{weight_momentum*100:.0f}% + AI{weight_ai*100:.0f}%\n" if weight_momentum is not None and weight_ai is not None else ""
+        text = f"""<b>📊 Hybrid 리밸런싱 ({today})</b>
+{weights_line}HOLD 신호 - 매매 없음"""
     else:
         picks_text = ""
         for i, (symbol, score) in enumerate(zip(signal["picks"], signal["scores"])):
@@ -307,6 +339,37 @@ SPY: ${spy_price:.2f}{weights_str}
 
 <b>Picks:</b>
 {picks_text}"""
+
+    return send_message(text)
+
+
+def send_hybrid_portfolio(portfolio_value):
+    """
+    Hybrid 포트폴리오 상태 메시지
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    total = portfolio_value.get("total", 0)
+    cash = portfolio_value.get("cash", 0)
+    stocks = portfolio_value.get("stocks", 0)
+
+    holdings_text = ""
+    for h in portfolio_value.get("holdings_detail", []):
+        symbol = h.get("symbol", "")
+        shares = h.get("shares", 0)
+        return_pct = h.get("profit_loss_pct", 0)
+        holdings_text += f"- {symbol}: {shares}주 ({return_pct:+.2f}%)\n"
+
+    if not holdings_text:
+        holdings_text = "- 보유 종목 없음\n"
+
+    text = f"""<b>Hybrid Portfolio Status ({today})</b>
+Total: ${total:,.2f}
+Cash: ${cash:,.2f}
+Stocks: ${stocks:,.2f}
+
+<b>Holdings:</b>
+{holdings_text}"""
 
     return send_message(text)
 
