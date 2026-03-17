@@ -783,6 +783,7 @@ def run_daily(sheets=None):
                 "holdings_detail": portfolio["holdings"]
             }
             ref_signal = get_today_signal()
+            sheets.save_signal(ref_signal)
             send_daily_summary(daily_data, port_value, signal=ref_signal)
         
     except Exception as e:
