@@ -518,7 +518,37 @@ class HybridTradingStrategy:
         print("\n✅ Hybrid 전략 준비 완료!")
         print(f"   시장 필터링: {'ON (평균 1개월 수익률 <= 0 → HOLD)' if self.use_market_filter else 'OFF'}")
         print(f"   SPY 상관관계 필터: > {self.correlation_threshold}")
-    
+
+    def prepare_daily_momentum(self, price_df):
+        """
+        모멘텀 부분만 일별 데이터 기준으로 재계산 (AI 무관)
+
+        Tuesday 필터 없이 전일 종가 기준으로 매일 새로운 점수를 계산.
+        - 1개월: pct_change(21)  ← 21 거래일
+        - 3개월: pct_change(63)
+        - 6개월: pct_change(126)
+
+        prepare() 호출 이후에 실행하면 score_df / ret_1m 이 일별로 교체됨.
+        """
+        m = self.momentum_strategy
+
+        # 상관관계: 전체 일별 데이터 기준으로 재계산
+        self.correlation_df = m.calc_correlation(price_df)
+
+        # 일별 수익률
+        ret_1m = price_df.pct_change(21)
+        ret_3m = price_df.pct_change(63)
+        ret_6m = price_df.pct_change(126)
+
+        self.score_df = (
+            ret_1m * m.weight_1m
+            + ret_3m * m.weight_3m
+            + ret_6m * m.weight_6m
+        )
+        self.ret_1m = ret_1m
+
+        print("\n📅 일별 모멘텀으로 교체 완료 (pct_change 21/63/126 거래일)")
+
     def check_market_condition(self, date):
         """
         시장 상황 체크: 평균 1개월 수익률 (모멘텀과 동일)
@@ -811,6 +841,55 @@ def get_hybrid_signal():
         alloc = result['allocations'][i]
         print(f"  {i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}, 비중 {alloc*100:.0f}%")
     
+    return result
+
+
+def get_hybrid_daily_ref_signal():
+    """
+    매일 참고용 하이브리드 신호 (전일 종가 기준)
+
+    get_hybrid_signal()과 동일하지만 모멘텀 부분만 다름:
+    - 모멘텀: Tuesday 필터 제거 → 전일 종가 기준 일별 pct_change(21/63/126)
+    - AI: 기존과 동일 (XGBoost 예측 그대로)
+    """
+    print("=" * 60)
+    print("Hybrid 일별 참고 신호 생성 (전일 종가 기준)")
+    print("=" * 60)
+
+    train_df, current_df, price_df, features = prepare_hybrid_data()
+
+    strategy = HybridTradingStrategy(use_market_filter=True)
+    strategy.prepare(train_df, price_df, features)
+
+    # 모멘텀만 일별로 교체 (AI 무관)
+    strategy.prepare_daily_momentum(price_df)
+
+    # 전일 종가 기준 (오늘 미완성 봉 제외)
+    today = pd.Timestamp(datetime.now().strftime('%Y-%m-%d'))
+    available_dates = sorted(current_df['date'].unique())
+
+    candidates = [d for d in available_dates if pd.Timestamp(d) < today]
+    latest_date = candidates[-1] if candidates else available_dates[-1]
+
+    print(f"\n기준일 (전일 종가): {latest_date}")
+
+    result = strategy.select_stocks(current_df, price_df, latest_date)
+
+    if result is None:
+        print("❌ 선정된 종목 없음")
+        return None
+
+    if result.get('market_filter', False):
+        print(f"\n⚠️ 시장 필터링 발동!")
+        print(f"   평균 1개월 수익률: {result.get('market_momentum', 0):.4f} <= 0")
+        return result
+
+    print(f"\n✅ 선정 종목:")
+    for i, (symbol, score) in enumerate(zip(result['picks'], result['scores'])):
+        price = result['prices'].get(symbol, 0)
+        alloc = result['allocations'][i]
+        print(f"  {i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}, 비중 {alloc*100:.0f}%")
+
     return result
 
 
