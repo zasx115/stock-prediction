@@ -264,6 +264,14 @@ def main():
     trades_df = result['trades']
     metrics = result['metrics']
 
+    # SPY 수익률 보정: create_features()는 SPY를 제외하므로 test_raw에서 직접 계산
+    if 'SPY' in test_raw['symbol'].unique():
+        spy = test_raw[test_raw['symbol'] == 'SPY'].sort_values('date')
+        if len(spy) >= 2:
+            spy_return = (spy.iloc[-1]['close'] - spy.iloc[0]['close']) / spy.iloc[0]['close']
+            metrics['spy_return'] = spy_return
+            metrics['alpha'] = metrics['total_return'] - spy_return
+
     print_results(metrics, args, backtest_end)
     plot_results(portfolio_df, trades_df, test_raw, args.output, args, backtest_end)
 
