@@ -1,0 +1,69 @@
+# ============================================
+# 파일명: .github/workflows/backtest_momentum.yml
+# 설명: 모멘텀 전략 백테스트 워크플로우
+#
+# 실행: Actions → Momentum Backtest → Run workflow
+# 결과: 로그에서 메트릭 확인 + Artifacts에서 그래프 다운로드
+# ============================================
+
+name: Momentum Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '백테스트 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2020-01-01'
+      end_date:
+        description: '백테스트 종료일 (YYYY-MM-DD, 빈값=오늘)'
+        required: false
+        default: ''
+      initial_capital:
+        description: '초기 자본금 (USD)'
+        required: false
+        default: '10000'
+      commission:
+        description: '수수료율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+      slippage:
+        description: '슬리피지율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn matplotlib python-dotenv lxml
+
+      - name: Run Momentum Backtest
+        working-directory: ./src
+        run: |
+          python run_momentum_backtest.py \
+            --start_date "${{ github.event.inputs.start_date }}" \
+            --end_date "${{ github.event.inputs.end_date }}" \
+            --initial_capital "${{ github.event.inputs.initial_capital }}" \
+            --commission "${{ github.event.inputs.commission }}" \
+            --slippage "${{ github.event.inputs.slippage }}" \
+            --output "../backtest_result_momentum.png"
+
+      - name: Upload result graph
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-backtest-result
+          path: backtest_result_momentum.png
+          retention-days: 30

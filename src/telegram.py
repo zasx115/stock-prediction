@@ -125,7 +125,7 @@ Stocks: ${stocks:,.2f}
     return send_message(text)
 
 
-def send_daily_summary(daily_data, portfolio_value, signal=None):
+def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None):
     """
     일일 요약 메시지
 
@@ -181,7 +181,8 @@ def send_daily_summary(daily_data, portfolio_value, signal=None):
                 f"신호: HOLD\n"
             )
 
-    text = f"""<b>Daily Summary ({date})</b>
+    strategy_label = f" [{strategy}]" if strategy else ""
+    text = f"""<b>Daily Summary{strategy_label} ({date})</b>
 Portfolio: ${total:,.2f}
 Daily: {daily_return:+.2f}%
 SPY: {spy_return:+.2f}%

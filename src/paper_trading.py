@@ -865,7 +865,7 @@ def run_daily(sheets=None):
             }
             ref_signal = get_daily_ref_signal()
             sheets.save_signal(ref_signal)
-            send_daily_summary(daily_data, port_value, signal=ref_signal)
+            send_daily_summary(daily_data, port_value, signal=ref_signal, strategy="Momentum")
         
     except Exception as e:
         print(f"Error: {e}")

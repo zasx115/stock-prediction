@@ -1405,7 +1405,7 @@ def run_hybrid_daily():
         if 'date' not in ref_signal:
             ref_signal['date'] = today
         sheets.save_signal(ref_signal)
-    send_daily_summary(daily_data, portfolio_value, signal=ref_signal)
+    send_daily_summary(daily_data, portfolio_value, signal=ref_signal, strategy="Hybrid")
 
     print("\n✅ Hybrid Daily 실행 완료!")
 

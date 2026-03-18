@@ -59,25 +59,33 @@ def create_trade_mapping(df):
 # [2] 백테스트 메인 함수
 # ============================================
 
-def run_backtest(df=None):
+def run_backtest(df=None, initial_capital=None, commission=None, slippage=None):
     """
     백테스트를 실행합니다.
-    
+
     Args:
         df: 원본 데이터프레임 (None이면 자동 로딩)
-    
+        initial_capital: 초기 자본금 (None이면 config 값 사용)
+        commission: 수수료율 (None이면 config 값 사용)
+        slippage: 슬리피지율 (None이면 config 값 사용)
+
     Returns:
         dict: {portfolio, trades, metrics, df}
     """
-    
+    # 파라미터 기본값 설정
+    _capital = initial_capital if initial_capital is not None else INITIAL_CAPITAL
+    _buy_comm = commission if commission is not None else BUY_COMMISSION
+    _sell_comm = commission if commission is not None else SELL_COMMISSION
+    _slippage = slippage if slippage is not None else SLIPPAGE
+
     # ===== 데이터 자동 로딩 =====
     if df is None:
         from data import get_backtest_data
         df = get_backtest_data()
-    
+
     # ===== 전략 초기화 =====
     strategy = CustomStrategy()
-    
+
     # ===== 설정 출력 =====
     print("=" * 60)
     print("[백테스트 실행]")
@@ -85,9 +93,9 @@ def run_backtest(df=None):
     print(f"전략: CustomStrategy (상관관계 필터 + 중장기 모멘텀)")
     print(f"상관관계 기준: {strategy.correlation_threshold}")
     print(f"종목 수: {strategy.top_n}개")
-    print(f"초기 자본금: ${INITIAL_CAPITAL:,}")
-    print(f"수수료: 매수 {BUY_COMMISSION*100:.2f}% + 매도 {SELL_COMMISSION*100:.2f}%")
-    print(f"슬리피지: {SLIPPAGE*100:.2f}%")
+    print(f"초기 자본금: ${_capital:,}")
+    print(f"수수료: 매수 {_buy_comm*100:.2f}% + 매도 {_sell_comm*100:.2f}%")
+    print(f"슬리피지: {_slippage*100:.2f}%")
     print(f"손절: {STOP_LOSS*100:.1f}%")
     print("=" * 60)
     
@@ -120,8 +128,8 @@ def run_backtest(df=None):
     # ===== 시뮬레이션 변수 =====
     portfolio_values = []
     trades = []
-    
-    cash = INITIAL_CAPITAL
+
+    cash = _capital
     holdings = {}  # {symbol: {'shares': int, 'avg_price': float, 'buy_date': date}}
     
     pending_orders = []
@@ -143,11 +151,11 @@ def run_backtest(df=None):
             if return_rate <= STOP_LOSS:
                 symbols_to_sell.append(symbol)
                 
-                sell_price = current_price * (1 - SLIPPAGE)
+                sell_price = current_price * (1 - _slippage)
                 sell_amount = sell_price * info['shares']
-                commission = sell_amount * SELL_COMMISSION
+                commission = sell_amount * _sell_comm
                 cash += sell_amount - commission
-                
+
                 trades.append({
                     'date': date,
                     'symbol': symbol,
@@ -172,8 +180,8 @@ def run_backtest(df=None):
                     continue
                 
                 current_price = price_dict[symbol]
-                buy_price = current_price * (1 + SLIPPAGE)
-                
+                buy_price = current_price * (1 + _slippage)
+
                 # 목표 금액
                 total_value = cash + sum(
                     price_dict.get(s, info['avg_price']) * info['shares']
@@ -191,7 +199,7 @@ def run_backtest(df=None):
                 
                 if diff > 0:  # 매수
                     buy_amount = min(diff, cash * 0.95)
-                    commission = buy_amount * BUY_COMMISSION
+                    commission = buy_amount * _buy_comm
                     
                     if cash >= buy_amount + commission and buy_amount > 10:
                         shares = int(buy_amount / buy_price)
@@ -234,9 +242,9 @@ def run_backtest(df=None):
                         sell_shares = int(abs(diff) / current_price)
                         if sell_shares > 0:
                             sell_shares = min(sell_shares, holdings[symbol]['shares'])
-                            sell_price = current_price * (1 - SLIPPAGE)
+                            sell_price = current_price * (1 - _slippage)
                             sell_amount = sell_shares * sell_price
-                            commission = sell_amount * SELL_COMMISSION
+                            commission = sell_amount * _sell_comm
                             cash += sell_amount - commission
                             
                             return_pct = (sell_price - holdings[symbol]['avg_price']) / holdings[symbol]['avg_price'] * 100
@@ -309,7 +317,7 @@ def run_backtest(df=None):
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
     
     # 성과 지표 계산
-    metrics = calculate_metrics(portfolio_df, trades_df, df)
+    metrics = calculate_metrics(portfolio_df, trades_df, df, _slippage)
     
     print("\n" + "=" * 60)
     print("✅ 백테스트 완료!")
@@ -327,7 +335,7 @@ def run_backtest(df=None):
 # [3] 성과 지표 계산
 # ============================================
 
-def calculate_metrics(portfolio_df, trades_df, df):
+def calculate_metrics(portfolio_df, trades_df, df, slippage_rate=SLIPPAGE):
     """
     백테스트 성과 지표를 계산합니다.
     """
@@ -372,6 +380,7 @@ def calculate_metrics(portfolio_df, trades_df, df):
     # 거래 통계
     total_trades = len(trades_df) if not trades_df.empty else 0
     total_commission = trades_df['commission'].sum() if not trades_df.empty else 0
+    total_slippage = trades_df['amount'].sum() * slippage_rate if not trades_df.empty else 0
     stop_loss_count = len(trades_df[trades_df['action'] == 'STOP_LOSS']) if not trades_df.empty else 0
     
     buy_count = len(trades_df[trades_df['action'] == 'BUY']) if not trades_df.empty else 0
@@ -396,6 +405,7 @@ def calculate_metrics(portfolio_df, trades_df, df):
         'add_count': add_count,
         'reduce_count': reduce_count,
         'total_commission': total_commission,
+        'total_slippage': total_slippage,
         'stop_loss_count': stop_loss_count
     }
 
