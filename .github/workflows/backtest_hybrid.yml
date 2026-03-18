@@ -1,0 +1,96 @@
+# ============================================
+# 파일명: .github/workflows/backtest_hybrid.yml
+# 설명: 하이브리드 전략 백테스트 워크플로우
+#
+# 핵심: 학습기간(train_start~train_end)과
+#       백테스트기간(backtest_start~backtest_end)을 독립 설정 가능
+#
+# 예시:
+#   - 학습: 2015~2020년 (5년), 백테스트: 2020~현재 (Out-of-Sample)
+#   - 학습: 2015~2018년 (3년), 백테스트: 2019~2025년 (장기 검증)
+#
+# 실행: Actions → Hybrid Backtest → Run workflow
+# 결과: 로그에서 메트릭 확인 + Artifacts에서 그래프 다운로드
+# ============================================
+
+name: Hybrid Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      train_start:
+        description: 'AI 학습 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2015-01-01'
+      train_end:
+        description: 'AI 학습 종료일 (YYYY-MM-DD)'
+        required: false
+        default: '2020-01-01'
+      backtest_start:
+        description: '백테스트 시작일 (YYYY-MM-DD, 보통 train_end와 동일)'
+        required: false
+        default: '2020-01-01'
+      backtest_end:
+        description: '백테스트 종료일 (YYYY-MM-DD, 빈값=오늘)'
+        required: false
+        default: ''
+      initial_capital:
+        description: '초기 자본금 (USD)'
+        required: false
+        default: '10000'
+      momentum_weight:
+        description: '모멘텀 가중치 (0.0~1.0, momentum+ai=1.0)'
+        required: false
+        default: '0.35'
+      ai_weight:
+        description: 'AI 가중치 (0.0~1.0, momentum+ai=1.0)'
+        required: false
+        default: '0.65'
+      commission:
+        description: '수수료율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+      slippage:
+        description: '슬리피지율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn matplotlib python-dotenv lxml
+
+      - name: Run Hybrid Backtest
+        working-directory: ./src
+        run: |
+          python run_hybrid_backtest.py \
+            --train_start "${{ github.event.inputs.train_start }}" \
+            --train_end "${{ github.event.inputs.train_end }}" \
+            --backtest_start "${{ github.event.inputs.backtest_start }}" \
+            --backtest_end "${{ github.event.inputs.backtest_end }}" \
+            --initial_capital "${{ github.event.inputs.initial_capital }}" \
+            --momentum_weight "${{ github.event.inputs.momentum_weight }}" \
+            --ai_weight "${{ github.event.inputs.ai_weight }}" \
+            --commission "${{ github.event.inputs.commission }}" \
+            --slippage "${{ github.event.inputs.slippage }}" \
+            --output "../backtest_result_hybrid.png"
+
+      - name: Upload result graph
+        uses: actions/upload-artifact@v4
+        with:
+          name: hybrid-backtest-result
+          path: backtest_result_hybrid.png
+          retention-days: 30

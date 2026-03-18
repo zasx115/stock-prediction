@@ -38,26 +38,33 @@ MIN_TRADE_AMOUNT = 50      # 최소 거래 금액
 # [2] AI 백테스트 실행
 # ============================================
 
-def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAPITAL):
+def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAPITAL,
+                    commission=None, slippage=None):
     """
     AI 전략 백테스트 실행
-    
+
     Args:
         strategy: AIStrategy 인스턴스 (학습 완료된)
         test_df: 테스트 데이터
         feature_cols: 피처 컬럼 리스트
         initial_capital: 초기 자본금
-    
+        commission: 수수료율 (None이면 config 값 사용)
+        slippage: 슬리피지율 (None이면 config 값 사용)
+
     Returns:
         dict: {portfolio, trades, metrics}
     """
+    _buy_comm = commission if commission is not None else BUY_COMMISSION
+    _sell_comm = commission if commission is not None else SELL_COMMISSION
+    _slippage = slippage if slippage is not None else SLIPPAGE
+
     print("=" * 60)
     print("AI 백테스트 실행")
     print("=" * 60)
     print(f"초기 자본금: ${initial_capital:,}")
     print(f"리밸런싱: 매주 {REBALANCE_DAY}")
-    print(f"수수료: {BUY_COMMISSION*100:.2f}% / {SELL_COMMISSION*100:.2f}%")
-    print(f"슬리피지: {SLIPPAGE*100:.2f}%")
+    print(f"수수료: {_buy_comm*100:.2f}% / {_sell_comm*100:.2f}%")
+    print(f"슬리피지: {_slippage*100:.2f}%")
     print(f"손절: {STOP_LOSS*100:.1f}%")
     print("=" * 60)
     
@@ -106,10 +113,10 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
             
             if return_rate <= STOP_LOSS:
                 symbols_to_sell.append(symbol)
-                
-                sell_price = current_price * (1 - SLIPPAGE)
+
+                sell_price = current_price * (1 - _slippage)
                 sell_amount = sell_price * info['shares']
-                commission = sell_amount * SELL_COMMISSION
+                commission = sell_amount * _sell_comm
                 cash += sell_amount - commission
                 
                 trades.append({
@@ -136,8 +143,8 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
                     continue
                 
                 current_price = price_dict[symbol]
-                buy_price = current_price * (1 + SLIPPAGE)
-                
+                buy_price = current_price * (1 + _slippage)
+
                 # 총 자산 계산
                 total_value = cash + sum(
                     price_dict.get(s, info['avg_price']) * info['shares']
@@ -157,7 +164,7 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
                 
                 if diff > MIN_TRADE_AMOUNT:  # 매수
                     buy_amount = min(diff, cash * 0.95)
-                    commission = buy_amount * BUY_COMMISSION
+                    commission = buy_amount * _buy_comm
                     
                     if cash >= buy_amount + commission:
                         shares = int(buy_amount / buy_price)
@@ -193,11 +200,11 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
                     if symbol in holdings:
                         sell_shares = int(abs(diff) / current_price)
                         sell_shares = min(sell_shares, holdings[symbol]['shares'])
-                        
+
                         if sell_shares > 0:
-                            sell_price = current_price * (1 - SLIPPAGE)
+                            sell_price = current_price * (1 - _slippage)
                             sell_amount = sell_shares * sell_price
-                            commission = sell_amount * SELL_COMMISSION
+                            commission = sell_amount * _sell_comm
                             cash += sell_amount - commission
                             
                             avg_price = holdings[symbol]['avg_price']
@@ -273,7 +280,7 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
     spy_df = spy_df.rename(columns={'close': 'spy_close'})
     
     # 성과 지표 계산
-    metrics = calculate_ai_metrics(portfolio_df, trades_df, spy_df, initial_capital)
+    metrics = calculate_ai_metrics(portfolio_df, trades_df, spy_df, initial_capital, _slippage)
     
     print("\n" + "=" * 60)
     print("✅ AI 백테스트 완료!")
@@ -290,7 +297,7 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
 # [3] 성과 지표 계산
 # ============================================
 
-def calculate_ai_metrics(portfolio_df, trades_df, spy_df, initial_capital):
+def calculate_ai_metrics(portfolio_df, trades_df, spy_df, initial_capital, slippage_rate=SLIPPAGE):
     """
     백테스트 성과 지표 계산
     """
@@ -331,6 +338,7 @@ def calculate_ai_metrics(portfolio_df, trades_df, spy_df, initial_capital):
     # 거래 통계
     total_trades = len(trades_df) if not trades_df.empty else 0
     total_commission = trades_df['commission'].sum() if not trades_df.empty else 0
+    total_slippage = trades_df['amount'].sum() * slippage_rate if not trades_df.empty else 0
     
     buy_count = len(trades_df[trades_df['action'] == 'BUY']) if not trades_df.empty else 0
     add_count = len(trades_df[trades_df['action'] == 'ADD']) if not trades_df.empty else 0
@@ -361,7 +369,8 @@ def calculate_ai_metrics(portfolio_df, trades_df, spy_df, initial_capital):
         'add_count': add_count,
         'sell_count': sell_count,
         'stop_loss_count': stop_loss_count,
-        'total_commission': total_commission
+        'total_commission': total_commission,
+        'total_slippage': total_slippage
     }
 
 
