@@ -1,10 +1,30 @@
 #!/usr/bin/env python3
 # ============================================
 # 파일명: src/run_hybrid_backtest.py
-# 설명: 하이브리드 전략 백테스트 실행기 (CLI)
+# 설명: 하이브리드 전략 백테스트 CLI 실행기
 #
-# 핵심: 학습기간(train_start~train_end)과
-#       백테스트기간(backtest_start~backtest_end)을 독립적으로 설정 가능
+# 역할 요약:
+#   GitHub Actions 워크플로우(.github/workflows/backtest_hybrid.yml)의 진입점.
+#   AI 학습기간과 백테스트기간을 독립적으로 설정 가능 (Out-of-Sample 검증 지원).
+#
+# 핵심 특징: 학습/백테스트 기간 완전 분리
+#   예시: 2015~2020년으로 AI 학습 후, 2020~2024년으로 백테스트
+#   → AI가 한 번도 본 적 없는 데이터로 평가 (진정한 Out-of-Sample)
+#
+# 실행 흐름:
+#   1. argparse로 CLI 인자 파싱
+#   2. S&P 500 종목 목록 로드
+#   3. 학습 데이터 다운로드 (train_start ~ train_end)
+#   4. 백테스트 데이터 다운로드 (backtest_start ~ backtest_end)
+#   5. 피처 생성: create_features(train_raw), create_features(test_raw)
+#   6. HybridStrategy.prepare(train_features, price_df, feature_cols) → AI 학습
+#   7. run_ai_backtest(strategy, test_features, ...) → 시뮬레이션
+#   8. SPY 수익률 패치: test_raw에서 직접 계산 (test_features에서 SPY 제외됨 이슈 해결)
+#   9. 텍스트 메트릭 출력 + PNG 그래프 저장
+#
+# SPY 수익률 계산 방법:
+#   create_features()는 SPY를 제외하므로 test_features에 SPY 없음.
+#   대신 원시 데이터(test_raw)에서 SPY를 직접 계산하여 metrics에 패치.
 #
 # 사용법:
 #   python run_hybrid_backtest.py \
@@ -18,6 +38,13 @@
 #     --commission 0.001 \
 #     --slippage 0.001 \
 #     --output backtest_result_hybrid.png
+#
+# 의존 관계:
+#   ← data.py (get_backtest_data, get_sp500_list)
+#   ← ai_data.py (create_features, get_feature_columns)
+#   ← hybrid_strategy.py (HybridStrategy)
+#   ← ai_backtest.py (run_ai_backtest)
+#   ← strategy.py (prepare_price_data)
 # ============================================
 
 import sys

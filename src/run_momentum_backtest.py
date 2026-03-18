@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
 # ============================================
 # 파일명: src/run_momentum_backtest.py
-# 설명: 모멘텀 전략 백테스트 실행기 (CLI)
+# 설명: 모멘텀 전략 백테스트 CLI 실행기
+#
+# 역할 요약:
+#   GitHub Actions 워크플로우(.github/workflows/backtest_momentum.yml)의 진입점.
+#   CLI 인자로 백테스트 파라미터를 받아 결과 텍스트와 PNG 그래프를 출력.
+#
+# 실행 흐름:
+#   1. argparse로 CLI 인자 파싱
+#   2. get_backtest_data()로 S&P 500 + SPY 데이터 다운로드
+#   3. run_backtest(df, initial_capital, commission, slippage) 호출
+#   4. SPY 수익률/알파 계산 (메트릭에 이미 포함)
+#   5. print_results()로 텍스트 메트릭 출력
+#   6. plot_results()로 3-subplot 그래프 저장 (PNG)
+#      Subplot 1: 누적 수익률 + SPY + 매수/손절 시점
+#      Subplot 2: 월별 수익률 바 차트
+#      Subplot 3: Drawdown 차트
+#
+# GitHub Actions 연동:
+#   workflow_dispatch 입력값 → CLI 인자로 전달
+#   그래프 PNG → Artifacts로 업로드 (30일 보관)
 #
 # 사용법:
 #   python run_momentum_backtest.py \
@@ -11,6 +30,10 @@
 #     --commission 0.001 \
 #     --slippage 0.001 \
 #     --output backtest_result_momentum.png
+#
+# 의존 관계:
+#   ← data.py (get_backtest_data)
+#   ← backtest.py (run_backtest)
 # ============================================
 
 import sys

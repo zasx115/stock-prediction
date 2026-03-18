@@ -1,6 +1,39 @@
 # ============================================
-# src/telegram.py
-# Telegram Notification Module
+# 파일명: src/telegram.py
+# 설명: Telegram 알림 모듈
+#
+# 역할 요약:
+#   페이퍼 트레이딩 시스템의 모든 Telegram 알림을 관리.
+#   Telegram Bot API를 직접 호출하여 HTML 포맷 메시지를 발송.
+#
+# 인증:
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 환경변수 필수
+#   (GitHub Actions Secrets 또는 로컬 .env에서 설정)
+#
+# 알림 유형:
+#   모멘텀 전략 (paper_trading.py 사용):
+#     send_signal()           → 매주 BUY/HOLD 신호
+#     send_portfolio()        → 포트폴리오 현황
+#     send_rebalancing()      → 리밸런싱 상세
+#     send_trade_signal()     → 개별 매매 알림
+#
+#   하이브리드 전략 (hybrid_trading.py 사용):
+#     send_hybrid_signal()        → 하이브리드 BUY/HOLD 신호
+#     send_hybrid_portfolio()     → 하이브리드 포트폴리오 현황
+#     send_hybrid_rebalancing()   → 하이브리드 리밸런싱 상세
+#
+#   공통:
+#     send_stop_loss()        → 손절 알림
+#     send_daily_summary()    → 일별 요약
+#     send_error()            → 에러 알림
+#
+# [주의] 데드 코드:
+#   send_trades()  → 정의되어 있으나 어디서도 호출되지 않음
+#                    (수동 매매 기록 시 사용 의도였으나 현재 미사용)
+#
+# 의존 관계:
+#   ← config.py (INITIAL_CAPITAL)
+#   → paper_trading.py, hybrid_trading.py 에서 호출
 # ============================================
 
 import requests
@@ -453,6 +486,9 @@ Capital: ${total_capital:,.0f}{weights_str}
 def send_trades(trades):
     """
     거래 실행 메시지 (수동 매매라 현재 미사용)
+
+    [데드 코드] 이 함수는 현재 paper_trading.py, hybrid_trading.py 어디서도 호출되지 않음.
+    수동 매매 기록 시 사용하려고 정의했으나, 자동화 시스템에서는 send_rebalancing()으로 대체됨.
     """
     if not trades:
         return True

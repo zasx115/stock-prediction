@@ -1,10 +1,36 @@
 # ============================================
-# src/paper_trading.py
-# Paper Trading System (API 없이)
-# - 신호 생성 (yfinance)
-# - Google Sheets 기록
-# - Telegram 알림
-# - 수동 매매 기록
+# 파일명: src/paper_trading.py
+# 설명: 모멘텀 전략 라이브 페이퍼 트레이딩 실행기
+#
+# 역할 요약:
+#   CustomStrategy(모멘텀)를 사용하는 라이브 트레이딩 시스템.
+#   매주 화요일 GitHub Actions에 의해 자동 실행.
+#   실제 주문은 없고, 신호를 Telegram과 Google Sheets에만 기록.
+#
+# 실행 흐름:
+#   1. yfinance로 최근 LOOKBACK_DAYS(약 2년) 주가 데이터 다운로드
+#   2. CustomStrategy.prepare() → 상관관계 + 모멘텀 점수 계산
+#   3. 오늘이 화요일이면: 종목 선정 → 신호 발송 → Sheets 기록
+#   4. 보유 종목 평가 (Sheets의 Holdings 기반) → 포트폴리오 Telegram 발송
+#   5. 손절 라인(-STOP_LOSS%) 도달 종목 체크 → 알림
+#   6. 일별/월별/연간 가치 기록 (Sheets)
+#
+# 모멘텀 전략 vs 하이브리드 전략 분리:
+#   - paper_trading.py: 모멘텀 전략 (CustomStrategy) 전용
+#   - hybrid_trading.py: 하이브리드 전략 (HybridStrategy) 전용
+#   → 두 시스템은 별개의 Google Sheets 스프레드시트에 기록
+#
+# 주요 함수:
+#   download_recent_data()   → yfinance 데이터 다운로드
+#   process_data()           → 롱포맷 변환 (data.py의 download_stock_data와 유사)
+#   run_paper_trading()      → 메인 실행 함수
+#   main()                   → GitHub Actions 진입점
+#
+# 의존 관계:
+#   ← strategy.py (CustomStrategy, prepare_price_data, filter_tuesday)
+#   ← sheets.py (SheetsManager)
+#   ← telegram.py (send_signal, send_portfolio 등)
+#   ← config.py (INITIAL_CAPITAL, STOP_LOSS, LOOKBACK_DAYS 등)
 # ============================================
 
 import pandas as pd

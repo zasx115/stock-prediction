@@ -1,12 +1,41 @@
 # ============================================
 # 파일명: src/ai_data.py
-# 설명: AI 모델용 피처 엔지니어링
-# 
-# 기능:
-# - 기술적 지표 계산
-# - 피처 생성
-# - 라벨 생성 (다음 주 +3% 여부)
-# - 학습/테스트 데이터 분리
+# 설명: AI 모델용 피처 엔지니어링 파이프라인
+#
+# 역할 요약:
+#   원시 주가 데이터(OHLCV)를 XGBoost 학습 가능한 피처 DataFrame으로 변환.
+#   롱포맷(날짜×종목) 피처를 생성하고 라벨(다음 5일 +3% 달성 여부)을 붙여 반환.
+#
+# 피처 목록 (총 약 20개):
+#   - 수익률: ret_5d, ret_10d, ret_20d, ret_60d, ret_120d
+#   - 이동평균 비율: ma_ratio_5d, ma_ratio_20d, ma_ratio_60d, ma_ratio_120d
+#                   (현재가 / MA - 1: 이격도)
+#   - 변동성: vol_5d, vol_20d, vol_60d  (일별 수익률 롤링 표준편차)
+#   - RSI: rsi  (14일 Wilder RSI, 0~100)
+#   - MACD: macd, macd_signal, macd_hist  (12/26/9 EMA)
+#   - 볼린저 밴드: bb_pct  (%B: 현재가의 밴드 내 위치, 0~1)
+#   - 거래량: vol_ratio_5d, vol_ratio_20d  (현재 / 평균거래량)
+#   - SPY 상관관계: spy_corr  (60일 롤링)
+#
+# 라벨 정의:
+#   label = 1 if 5거래일 후 수익률 >= TARGET_RETURN(3%) else 0
+#   (미래 수익률을 shift로 과거로 당겨서 지도학습 라벨로 사용)
+#
+# 데이터 기간 설정 (자동 롤링):
+#   TRAIN_START = 오늘 - 5년
+#   TRAIN_END   = 오늘 - 1년
+#   TEST_START  = 오늘 - 1년
+#   TEST_END    = None (현재까지)
+#
+# 주요 함수:
+#   create_features(df)          → 피처 DataFrame 생성 (핵심 함수)
+#   split_train_test(df)         → 날짜 기준 학습/테스트 분리
+#   get_feature_columns(df)      → 피처 컬럼 목록만 반환
+#   prepare_ai_data(symbols)     → 다운로드 + 피처 + 분리 일괄 처리
+#
+# 의존 관계:
+#   ← data.py (get_backtest_data, download_stock_data, get_sp500_list)
+#   → ai_strategy.py, ai_backtest.py, hybrid_strategy.py 에서 호출
 # ============================================
 
 import pandas as pd
@@ -117,47 +146,61 @@ def calc_volatility(df, windows=[5, 20, 60]):
 def calc_rsi(df, period=14):
     """
     RSI (Relative Strength Index) 계산
-    
+
+    알고리즘 (단순 이동평균 방식, Wilder RSI 아님):
+      1. 일별 가격 변화량(delta) 계산
+      2. 상승분(gain)과 하락분(loss) 분리
+      3. 각각 rolling(period).mean()으로 평균 계산
+      4. RS = avg_gain / avg_loss
+      5. RSI = 100 - (100 / (1 + RS))
+         → 0~100 범위, 70 이상=과매수, 30 이하=과매도
+
     Args:
-        df: 종가 데이터
+        df: 종가 데이터 (피벗 테이블)
         period: RSI 기간 (기본 14일)
-    
+
     Returns:
         DataFrame: RSI 값 (0~100)
     """
     delta = df.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = (-delta).where(delta < 0, 0)
-    
+    gain = delta.where(delta > 0, 0)   # 양수(상승)만 남기고 나머지 0
+    loss = (-delta).where(delta < 0, 0)  # 음수(하락)를 양수로 반전
+
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-    
+
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    
+
     return rsi
 
 
 def calc_macd(df, fast=12, slow=26, signal=9):
     """
-    MACD 계산
-    
+    MACD (Moving Average Convergence Divergence) 계산
+
+    알고리즘:
+      1. 단기 EMA(12일) - 장기 EMA(26일) = MACD 라인
+      2. MACD의 9일 EMA = Signal 라인
+      3. MACD - Signal = Histogram (추세 가속도)
+         → 히스토그램 양수 전환 = 상승 신호, 음수 전환 = 하락 신호
+
     Args:
-        df: 종가 데이터
-        fast: 단기 EMA 기간
-        slow: 장기 EMA 기간
-        signal: 시그널 기간
-    
+        df: 종가 데이터 (피벗 테이블)
+        fast: 단기 EMA 기간 (기본 12)
+        slow: 장기 EMA 기간 (기본 26)
+        signal: 시그널 EMA 기간 (기본 9)
+
     Returns:
-        tuple: (MACD, Signal, Histogram)
+        tuple: (MACD 라인, Signal 라인, Histogram)
     """
-    ema_fast = df.ewm(span=fast).mean()
-    ema_slow = df.ewm(span=slow).mean()
-    
-    macd = ema_fast - ema_slow
-    macd_signal = macd.ewm(span=signal).mean()
-    macd_hist = macd - macd_signal
-    
+    ema_fast = df.ewm(span=fast).mean()   # 단기 지수이동평균
+    ema_slow = df.ewm(span=slow).mean()   # 장기 지수이동평균
+
+    macd = ema_fast - ema_slow            # MACD = 단기EMA - 장기EMA
+    macd_signal = macd.ewm(span=signal).mean()  # Signal = MACD의 EMA
+    macd_hist = macd - macd_signal        # Histogram = 추세 강도
+
     return macd, macd_signal, macd_hist
 
 
@@ -242,22 +285,29 @@ def calc_spy_correlation(price_df, window=60):
 
 def create_labels(price_df, target_return=TARGET_RETURN, target_days=TARGET_DAYS):
     """
-    다음 N일 수익률 기반 라벨 생성
-    
+    다음 N일 수익률 기반 이진 분류 라벨 생성
+
+    알고리즘:
+      1. pct_change(target_days): N일 후 수익률 계산
+      2. shift(-target_days): 미래 수익률을 현재 날짜로 당겨오기
+         예: 오늘 날짜에 "5일 후 수익률"을 라벨로 붙임
+      3. >= target_return(3%)이면 1(매수 추천), 아니면 0(패스)
+      주의: 최근 target_days 행은 라벨이 NaN (미래 데이터 없음) → 학습에서 제외됨
+
     Args:
-        price_df: 종가 데이터
+        price_df: 종가 데이터 (피벗 테이블)
         target_return: 목표 수익률 (기본 3%)
-        target_days: 목표 기간 (기본 5일)
-    
+        target_days: 목표 기간 (기본 5일 = 1주일)
+
     Returns:
-        DataFrame: 라벨 (1 = 매수, 0 = 패스)
+        tuple: (labels DataFrame (0 또는 1), future_ret DataFrame (실제 수익률))
     """
-    # 미래 수익률 (shift로 과거로 당김)
+    # 미래 N일 수익률을 현재 날짜로 shift
     future_ret = price_df.pct_change(target_days).shift(-target_days)
-    
-    # 목표 수익률 달성 여부
+
+    # 이진 분류 라벨: 3% 이상 달성이면 1
     labels = (future_ret >= target_return).astype(int)
-    
+
     return labels, future_ret
 
 
@@ -267,24 +317,33 @@ def create_labels(price_df, target_return=TARGET_RETURN, target_days=TARGET_DAYS
 
 def create_features(df):
     """
-    모든 피처를 생성하고 통합
-    
+    모든 피처를 생성하고 종목-날짜 롱포맷으로 통합
+
+    알고리즘 (파이프라인):
+      1. 롱포맷 → 피벗 테이블 변환 (날짜 × 종목)
+      2. 각 기술적 지표를 피벗 테이블 전체에 대해 일괄 계산 (벡터화)
+      3. SPY는 학습 종목에서 제외 (벤치마크 역할만, 상관관계 계산에만 사용)
+      4. 각 종목별로 피처 조각을 수집 → pd.concat()으로 최종 통합
+      5. 피처 컬럼에 NaN이 있는 행 제거 (초기 기간, 데이터 부족 등)
+
     Args:
         df: 원본 데이터프레임 (date, symbol, open, high, low, close, volume)
-    
+
     Returns:
-        DataFrame: 종목-날짜별 피처 (long format)
+        DataFrame: 종목-날짜별 피처 (long format),
+                   컬럼: date, symbol, close, [피처들...], label, future_ret
     """
     print("=" * 60)
     print("피처 생성 시작...")
     print("=" * 60)
-    
-    # 피벗 테이블 생성
+
+    # 롱포맷 → (날짜 × 종목) 피벗 테이블 변환
     price_df = df.pivot(index='date', columns='symbol', values='close')
     volume_df = df.pivot(index='date', columns='symbol', values='volume')
     high_df = df.pivot(index='date', columns='symbol', values='high')
     low_df = df.pivot(index='date', columns='symbol', values='low')
-    
+
+    # SPY는 학습 대상에서 제외 (상관관계 계산에는 사용됨)
     symbols = [col for col in price_df.columns if col != 'SPY']
     
     print(f"종목 수: {len(symbols)}")

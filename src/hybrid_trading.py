@@ -1,12 +1,37 @@
 # ============================================
 # 파일명: src/hybrid_trading.py
-# 설명: 하이브리드 전략 페이퍼 트레이딩
-# 
-# 전략: 모멘텀 35% + AI 65%
-# 백테스트 성과:
-# - 수익률: +352.73%
-# - 승률: 61.2%
-# - 샤프비율: 2.51
+# 설명: 하이브리드 전략 라이브 페이퍼 트레이딩 실행기
+#
+# 역할 요약:
+#   매주 화요일 GitHub Actions에 의해 자동 실행되는 라이브 트레이딩 시스템.
+#   AI 학습 → 신호 생성 → 포트폴리오 평가 → Telegram/Google Sheets 기록.
+#
+# 실행 흐름 (main 함수 기준):
+#   1. AI 학습 데이터 다운로드 (5년 전 ~ 1년 전, 자동 롤링)
+#   2. 최근 1년 데이터 다운로드 (신호 생성 + 모멘텀 계산용)
+#   3. 피처 생성 (create_features) → HybridStrategy 준비
+#      - AIStrategy(XGBoost) 학습
+#      - CustomStrategy 모멘텀 점수/상관관계 계산
+#   4. 오늘이 화요일이면: 신호 생성 → Telegram 발송 → Sheets 기록
+#   5. 포트폴리오 현재 가치 평가 → Telegram 발송 → Sheets 기록
+#   6. 손절 체크: 보유 종목 중 STOP_LOSS 이하 종목 감지 → 알림
+#
+# AI 학습 기간 (자동 롤링):
+#   TRAIN_START = 오늘 - 5년 (매 실행마다 계산)
+#   TRAIN_END   = 오늘 - 1년
+#   → 매주 재학습으로 최신 시장 환경 반영
+#
+# 주요 클래스/함수:
+#   HybridSheetsManager  → Hybrid 전용 Google Sheets 래퍼
+#   run_hybrid_trading() → 메인 실행 함수
+#   main()               → GitHub Actions 진입점
+#
+# 의존 관계:
+#   ← hybrid_strategy.py (HybridStrategy → AIStrategy + CustomStrategy)
+#   ← ai_data.py (create_features, get_feature_columns)
+#   ← sheets.py (SheetsManager)
+#   ← telegram.py (알림 발송 함수들)
+#   ← data.py (get_backtest_data, get_sp500_list)
 # ============================================
 
 import pandas as pd
@@ -68,8 +93,9 @@ HYBRID_SIGNALS_SHEET = "Signals"
 WEIGHT_MOMENTUM = 0.35
 WEIGHT_AI = 0.65
 
-# AI 학습 기간 (자동 롤링)
-# - 학습: 5년 전 ~ 1년 전
+# AI 학습 기간 (자동 롤링) - 매 실행마다 현재 날짜 기준으로 재계산
+# - 학습: 5년 전 ~ 1년 전 (out-of-sample 방식: 가장 최근 1년은 테스트/라이브용)
+# - 매주 재학습으로 최신 시장 패턴 반영
 _today = datetime.now()
 TRAIN_START = (_today - timedelta(days=365*5)).strftime('%Y-%m-%d')  # 5년 전
 TRAIN_END = (_today - timedelta(days=365)).strftime('%Y-%m-%d')      # 1년 전

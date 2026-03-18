@@ -1,8 +1,35 @@
 # ============================================
-# src/sheets.py
-# Google Sheets Connection Module (v2)
-# 7 Sheets: Portfolio, Trades, Signals,
-#           Daily_Value, Monthly_Value, Yearly_Value, Performance
+# 파일명: src/sheets.py
+# 설명: Google Sheets 연동 모듈 (v2)
+#
+# 역할 요약:
+#   페이퍼 트레이딩의 모든 데이터를 Google Sheets에 저장/로드하는 영속성 계층.
+#   실제 증권사 API 없이 Sheets를 DB처럼 사용.
+#
+# 스프레드시트 구조 (7개 시트):
+#   Holdings     → 현재 보유 종목 (Symbol, Shares, Avg_Price, Sector, Buy_Date)
+#   Trades       → 매매 내역 (Date, Symbol, Action, Shares, Price, Amount, Commission, ...)
+#   Signals      → 주간 매매 신호 (Timestamp, Analysis_Date, Signal, Picks, Scores, ...)
+#   Daily_Value  → 일별 포트폴리오 가치 (Total_Value, Cash, SPY_Price, Alpha, ...)
+#   Monthly_Value→ 월별 집계 (자동 생성)
+#   Yearly_Value → 연별 집계 + 세금 추정 (자동 생성)
+#   Performance  → 전체 성과 요약 (Sharpe, MDD, Win_Rate 등)
+#
+# 인증 방법 (우선순위):
+#   1. service_account.json 파일 (로컬 개발)
+#   2. GOOGLE_CREDENTIALS 환경변수 JSON (GitHub Actions)
+#   3. Google Colab 인증 (Colab 환경)
+#
+# 세금 계산:
+#   해외주식 양도소득세: (실현이익 × 환율 - 250만원 공제) × 22%
+#
+# 주의: 이 모듈은 모멘텀 전략(paper_trading.py)과 하이브리드 전략(hybrid_trading.py)
+#       모두에서 사용되며, 스프레드시트 이름만 다름.
+#
+# 의존 관계:
+#   ← gspread, google-oauth2 라이브러리
+#   ← config.py (BUY_COMMISSION, INITIAL_CAPITAL)
+#   → paper_trading.py, hybrid_trading.py 에서 SheetsManager 사용
 # ============================================
 
 import gspread
@@ -61,7 +88,10 @@ TAX_EXEMPTION = 2500000  # 원
 def to_python(val):
     """
     numpy/pandas 타입을 Python 기본 타입으로 변환
-    Google Sheets API는 JSON 직렬화가 필요하므로 numpy 타입 사용 불가
+
+    이유: Google Sheets gspread API는 JSON 직렬화를 사용하는데,
+         numpy 타입(np.int64, np.float32 등)은 JSON 직렬화 불가 → TypeError 발생
+         이 함수로 모든 값을 Python 기본 타입(int, float, list)으로 변환 후 전송.
     """
     if val is None:
         return ""
@@ -94,21 +124,21 @@ class SheetsManager:
     # ============================================
     
     def _connect(self):
-        # Method 1: Service Account File
+        # 인증 방법 1: 로컬 서비스 계정 파일 (개발 환경)
         if os.path.exists(SERVICE_ACCOUNT_FILE):
             creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
             self.gc = gspread.authorize(creds)
             print("Connected via service account file")
-        
-        # Method 2: Environment Variable (GitHub Actions)
+
+        # 인증 방법 2: 환경변수 JSON (GitHub Actions Secrets)
         elif os.environ.get("GOOGLE_CREDENTIALS"):
             creds_json = os.environ.get("GOOGLE_CREDENTIALS")
             creds_dict = json.loads(creds_json)
             creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
             self.gc = gspread.authorize(creds)
             print("Connected via environment variable")
-        
-        # Method 3: Colab Auth
+
+        # 인증 방법 3: Google Colab 인터랙티브 인증
         else:
             try:
                 from google.colab import auth
@@ -288,16 +318,20 @@ class SheetsManager:
     def sync_holdings_from_trades(self, initial_capital=None):
         """
         Trades 시트 기반으로 Holdings 시트 자동 동기화 + Cash 계산
-        
-        로직:
-        - BUY: 보유 추가, Cash 차감
-        - SELL/STOP_LOSS: 보유 차감, Cash 증가
-        
+
+        알고리즘:
+          1. Trades 시트 전체 로드
+          2. 초기 자본금에서 시작하여 거래 순서대로 현금 증감:
+             - BUY: cash -= amount + commission, holdings에 추가/평균단가 계산
+             - SELL/STOP_LOSS: cash += amount - commission, holdings에서 차감
+          3. Holdings 시트 초기화 후 재기록
+          → 실제 DB 없이 Trades 이력으로 현재 상태 재계산하는 이벤트소싱 패턴
+
         Args:
             initial_capital: 초기 자본금 (None이면 config에서 가져옴)
-        
+
         Returns:
-            dict: {holdings: {...}, cash: float}
+            dict: {holdings: {symbol: {shares, avg_price, ...}}, cash: float}
         """
         # 초기 자본금
         if initial_capital is None:
@@ -742,9 +776,14 @@ class SheetsManager:
     def update_yearly_summary(self, exchange_rate=1400):
         """
         연간 리포트 자동 생성 (세금 계산 포함)
-        
+
+        세금 계산 로직 (해외주식 양도소득세):
+          1. 실현이익(달러) × 환율 → 실현이익(원화)
+          2. 실현이익(원화) - 기본공제 250만원 = 과세표준
+          3. 과세표준 × 22% = 예상 세금 (과세표준이 0 이하이면 세금 없음)
+
         Args:
-            exchange_rate: 원/달러 환율 (세금 계산용)
+            exchange_rate: 원/달러 환율 (기본 1400원, 세금 계산용)
         """
         daily_df = self.load_daily_values()
         trades_df = self.load_trades()

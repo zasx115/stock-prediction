@@ -1,12 +1,37 @@
 # ============================================
 # 파일명: src/ai_strategy.py
 # 설명: XGBoost / LightGBM 기반 AI 매매 전략
-# 
-# 기능:
-# - XGBoost / LightGBM 모델 학습
-# - 종목 예측 (다음 주 +3% 확률)
-# - Top N 종목 선정
-# - 앙상블 (두 모델 결합)
+#
+# 역할 요약:
+#   ai_data.py가 생성한 피처를 사용해 이진 분류 모델을 학습하고,
+#   특정 날짜에 "다음 5일 내 +3% 달성" 확률이 높은 종목을 선정.
+#
+# 구성:
+#   AIStrategy  (XGBoost): 하이브리드 전략의 AI 컴포넌트로 사용
+#   LGBStrategy (LightGBM): 비교/앙상블용 (현재 하이브리드에서는 미사용)
+#   evaluate_model()     : XGBoost 테스트셋 평가
+#   evaluate_lgb_model() : LightGBM 테스트셋 평가
+#
+# 모델 파라미터 설계 의도:
+#   - max_depth=4, num_leaves=10: 과적합 방지를 위한 얕은 트리
+#   - n_estimators=1000: 많은 트리로 분산 감소 (early stopping 미사용)
+#   - scale_pos_weight=3: 라벨 불균형 보정 (0이 1보다 약 3배 많음)
+#   - subsample=0.7, colsample_bytree=0.7: 배깅 효과로 일반화
+#
+# 종목 선정 논리:
+#   predict() → probability ≥ min_probability(0.5) 필터 → 확률 내림차순 Top N
+#
+# [주의] 데드 코드:
+#   - AIStrategy.train()의 y_prob 변수: 계산 후 사용되지 않음
+#   - LGBStrategy.train()의 y_prob 변수: 동일하게 미사용
+#   - evaluate_model()의 y_prob 변수: 동일하게 미사용
+#   - evaluate_lgb_model()의 y_prob 변수: 동일하게 미사용
+#   (추후 ROC-AUC 등 추가 평가를 위해 남겨둔 것으로 보임)
+#
+# 의존 관계:
+#   ← ai_data.py의 피처 DataFrame
+#   → hybrid_strategy.py (HybridStrategy 내부에서 AIStrategy 사용)
+#   → ai_backtest.py (run_ai_backtest의 strategy 인자로 전달)
 # ============================================
 
 import pandas as pd
@@ -184,21 +209,22 @@ class AIStrategy:
         
         # 검증 성능
         y_pred = self.model.predict(X_valid)
+        # [주의] y_prob는 현재 사용되지 않음 (미래에 ROC-AUC 등 추가 시 활용 가능)
         y_prob = self.model.predict_proba(X_valid)[:, 1]
-        
+
         metrics = {
             'accuracy': accuracy_score(y_valid, y_pred),
             'precision': precision_score(y_valid, y_pred, zero_division=0),
             'recall': recall_score(y_valid, y_pred, zero_division=0),
             'f1': f1_score(y_valid, y_pred, zero_division=0)
         }
-        
+
         self.train_metrics = metrics
-        
+
         print("\n✅ 학습 완료!")
         print(f"\n📊 검증 성능:")
         print(f"  Accuracy:  {metrics['accuracy']:.4f}")
-        print(f"  Precision: {metrics['precision']:.4f}")  # 매수 신호 정확도
+        print(f"  Precision: {metrics['precision']:.4f}")  # 매수 신호 정확도 (실제 승률과 직결)
         print(f"  Recall:    {metrics['recall']:.4f}")
         print(f"  F1 Score:  {metrics['f1']:.4f}")
         
@@ -384,25 +410,26 @@ def evaluate_model(strategy, test_df, feature_cols):
     print("=" * 60)
     
     pred_df = strategy.predict(test_df, feature_cols)
-    
+
     y_true = test_df['label'].values
     y_pred = (pred_df['probability'] >= strategy.min_probability).astype(int).values
+    # [주의] y_prob는 현재 사용되지 않음 (미래에 ROC-AUC 등 추가 시 활용 가능)
     y_prob = pred_df['probability'].values
-    
+
     metrics = {
         'accuracy': accuracy_score(y_true, y_pred),
         'precision': precision_score(y_true, y_pred, zero_division=0),
         'recall': recall_score(y_true, y_pred, zero_division=0),
         'f1': f1_score(y_true, y_pred, zero_division=0)
     }
-    
+
     print(f"\n📊 테스트 성능:")
     print(f"  Accuracy:  {metrics['accuracy']:.4f}")
-    print(f"  Precision: {metrics['precision']:.4f}")  # 승률!
+    print(f"  Precision: {metrics['precision']:.4f}")  # 실제 매매 승률과 직결
     print(f"  Recall:    {metrics['recall']:.4f}")
     print(f"  F1 Score:  {metrics['f1']:.4f}")
-    
-    # Confusion Matrix
+
+    # Confusion Matrix: TP=실제로 상승했고 매수 신호, FP=매수 신호인데 실제 안 오름
     cm = confusion_matrix(y_true, y_pred)
     print(f"\n📊 Confusion Matrix:")
     print(f"  TN={cm[0,0]:,}  FP={cm[0,1]:,}")
@@ -458,42 +485,43 @@ class LGBStrategy:
     
     def train(self, train_df, feature_cols, valid_ratio=0.2):
         """
-        LightGBM 모델 학습
+        LightGBM 모델 학습 (AIStrategy.train()과 동일한 로직, LightGBM 버전)
         """
         print("=" * 60)
         print("LightGBM 모델 학습")
         print("=" * 60)
-        
+
         self.feature_cols = feature_cols
-        
+
         # 데이터 준비
         X = train_df[feature_cols].values
         y = train_df['label'].values
-        
+
         print(f"학습 데이터: {len(X):,}개")
         print(f"피처 수: {len(feature_cols)}")
         print(f"라벨 분포: 0={sum(y==0):,}, 1={sum(y==1):,}")
-        
-        # 학습/검증 분리
+
+        # 학습/검증 분리 (stratify=y: 라벨 비율 유지)
         X_train, X_valid, y_train, y_valid = train_test_split(
             X, y, test_size=valid_ratio, random_state=42, stratify=y
         )
-        
+
         print(f"\n학습셋: {len(X_train):,}개")
         print(f"검증셋: {len(X_valid):,}개")
-        
+
         # 모델 학습
         print("\n모델 학습 중...")
-        
+
         self.model = lgb.LGBMClassifier(**self.params)
-        
+
         self.model.fit(
             X_train, y_train,
             eval_set=[(X_valid, y_valid)],
         )
-        
+
         # 검증 성능
         y_pred = self.model.predict(X_valid)
+        # [주의] y_prob는 현재 사용되지 않음 (미래에 ROC-AUC 등 추가 시 활용 가능)
         y_prob = self.model.predict_proba(X_valid)[:, 1]
         
         metrics = {
@@ -629,24 +657,25 @@ def evaluate_lgb_model(strategy, test_df, feature_cols):
     print("=" * 60)
     
     pred_df = strategy.predict(test_df, feature_cols)
-    
+
     y_true = test_df['label'].values
     y_pred = (pred_df['probability'] >= strategy.min_probability).astype(int).values
+    # [주의] y_prob는 현재 사용되지 않음 (미래에 ROC-AUC 등 추가 시 활용 가능)
     y_prob = pred_df['probability'].values
-    
+
     metrics = {
         'accuracy': accuracy_score(y_true, y_pred),
         'precision': precision_score(y_true, y_pred, zero_division=0),
         'recall': recall_score(y_true, y_pred, zero_division=0),
         'f1': f1_score(y_true, y_pred, zero_division=0)
     }
-    
+
     print(f"\n📊 테스트 성능:")
     print(f"  Accuracy:  {metrics['accuracy']:.4f}")
     print(f"  Precision: {metrics['precision']:.4f}")
     print(f"  Recall:    {metrics['recall']:.4f}")
     print(f"  F1 Score:  {metrics['f1']:.4f}")
-    
+
     cm = confusion_matrix(y_true, y_pred)
     print(f"\n📊 Confusion Matrix:")
     print(f"  TN={cm[0,0]:,}  FP={cm[0,1]:,}")

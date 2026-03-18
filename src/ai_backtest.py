@@ -1,11 +1,35 @@
 # ============================================
 # 파일명: src/ai_backtest.py
-# 설명: AI 전략 백테스트
-# 
-# 기능:
-# - AI 모델 기반 매매 시뮬레이션
-# - 주간 단위 리밸런싱
-# - 성과 분석 및 시각화
+# 설명: AI/하이브리드 전략 백테스트 엔진
+#
+# 역할 요약:
+#   AIStrategy 또는 HybridStrategy를 받아 일별 시뮬레이션을 수행.
+#   backtest.py(모멘텀)와 거의 동일한 시뮬레이션 구조이나,
+#   종목 선정이 AI 확률 기반이라는 점이 다름.
+#
+# 핵심 로직 흐름:
+#   1. 화요일 날짜 목록 추출 → 수요일 T+1 매핑 생성
+#   2. 일별 루프:
+#      a. 손절 체크 (매일): 수익률 ≤ STOP_LOSS → 즉시 시장가 매도
+#      b. 대기 주문 실행 (수요일): 목표 비중 대비 매수/비중축소
+#      c. 화요일 신호: strategy.select_stocks()로 종목 선정 → 수요일 주문 예약
+#      d. 포트폴리오 가치 기록
+#   3. 성과 메트릭 계산 및 반환
+#
+# SPY 처리 주의:
+#   - 하이브리드 백테스트에서는 ai_data.create_features()가 SPY를 제외하므로
+#     test_df에 SPY 행이 없음 → spy_df가 비어 spy_return=0이 됨
+#   - run_hybrid_backtest.py에서 test_raw(원시 데이터)로 SPY 수익률을 별도 계산해 패치함
+#
+# 주요 함수:
+#   run_ai_backtest(strategy, test_df, feature_cols, ...) → 백테스트 실행
+#   calculate_ai_metrics(...)                             → 성과 지표 계산
+#   compare_strategies(momentum_result, ai_result)        → 두 전략 비교
+#
+# 의존 관계:
+#   ← ai_strategy.py (AIStrategy) 또는 hybrid_strategy.py (HybridStrategy)
+#   ← config.py (INITIAL_CAPITAL, STOP_LOSS, COMMISSION, SLIPPAGE)
+#   → run_hybrid_backtest.py 에서 run_ai_backtest() 호출
 # ============================================
 
 import pandas as pd
@@ -68,52 +92,53 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
     print(f"손절: {STOP_LOSS*100:.1f}%")
     print("=" * 60)
     
-    # 날짜 정렬
+    # 날짜 정렬 및 화요일→수요일 매핑 준비
     test_df = test_df.copy()
     test_df['date'] = pd.to_datetime(test_df['date'])
     dates = sorted(test_df['date'].unique())
-    
+
     print(f"테스트 기간: {dates[0].strftime('%Y-%m-%d')} ~ {dates[-1].strftime('%Y-%m-%d')}")
     print(f"총 {len(dates)}일")
-    
-    # 화요일 찾기
+
+    # 화요일 날짜 목록 (리밸런싱 신호 생성일)
     tuesday_dates = [d for d in dates if d.day_name() == REBALANCE_DAY]
     print(f"리밸런싱 횟수: {len(tuesday_dates)}회")
-    
-    # 화요일 → 수요일 매핑
+
+    # 화요일 → 수요일 T+1 매핑 (당일 종가 매수 방지)
     trade_map = {}
     for tue in tuesday_dates:
-        # 다음 수요일 찾기
+        # 화요일 이후 첫 번째 수요일 찾기
         for d in dates:
             if d > tue and d.day_name() == TRADE_DAY:
                 trade_map[tue] = d
                 break
-    
-    # ----- 시뮬레이션 변수 -----
+
+    # ----- 시뮬레이션 상태 변수 -----
     portfolio_values = []
     trades = []
-    
+
     cash = initial_capital
     holdings = {}  # {symbol: {'shares': int, 'avg_price': float}}
-    pending_orders = []  # 대기 주문
-    
-    # ----- 일별 시뮬레이션 -----
+    pending_orders = []  # 화요일 생성, 수요일 실행 대기 주문
+
+    # ----- 일별 시뮬레이션 루프 -----
     for date in dates:
         date_df = test_df[test_df['date'] == date]
         price_dict = dict(zip(date_df['symbol'], date_df['close']))
-        
-        # ----- 1. 손절 체크 -----
+
+        # ----- Step 1: 손절 체크 (매일) -----
         symbols_to_sell = []
         for symbol, info in holdings.items():
             if symbol not in price_dict:
                 continue
-            
+
             current_price = price_dict[symbol]
             return_rate = (current_price - info['avg_price']) / info['avg_price']
-            
+
             if return_rate <= STOP_LOSS:
                 symbols_to_sell.append(symbol)
 
+                # 손절 매도: 슬리피지 적용
                 sell_price = current_price * (1 - _slippage)
                 sell_amount = sell_price * info['shares']
                 commission = sell_amount * _sell_comm
@@ -225,14 +250,14 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
                                 'return_pct': ret_pct
                             })
         
-        # 실행된 주문 제거
+        # 실행 완료된 주문 대기열에서 제거
         pending_orders = [o for o in pending_orders if o['trade_date'] != date]
-        
-        # ----- 3. 화요일: 신호 생성 및 주문 예약 -----
+
+        # ----- Step 3: 화요일 신호 생성 및 수요일 주문 예약 -----
         if date in trade_map:
-            trade_date = trade_map[date]
-            
-            # AI 모델로 종목 선정
+            trade_date = trade_map[date]  # 다음 수요일 매수일
+
+            # AI/하이브리드 모델로 매수 종목 선정
             result = strategy.select_stocks(test_df, feature_cols, date)
             
             if result is not None:
@@ -274,8 +299,11 @@ def run_ai_backtest(strategy, test_df, feature_cols, initial_capital=INITIAL_CAP
     # ----- 결과 정리 -----
     portfolio_df = pd.DataFrame(portfolio_values)
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
-    
+
     # SPY 데이터 추출
+    # [주의] create_features()는 SPY를 제외하므로 test_df에 SPY 행이 없을 수 있음
+    # → spy_df가 비어 있으면 spy_return=0이 됨
+    # → run_hybrid_backtest.py에서 test_raw로 별도 계산하여 패치함
     spy_df = test_df[test_df['symbol'] == 'SPY'][['date', 'close']].copy()
     spy_df = spy_df.rename(columns={'close': 'spy_close'})
     
