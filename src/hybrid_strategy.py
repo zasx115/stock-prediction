@@ -1,12 +1,37 @@
 # ============================================
 # 파일명: src/hybrid_strategy.py
 # 설명: 하이브리드 전략 (모멘텀 + AI 결합)
-# 
-# 최적 파라미터:
-# - 모멘텀 가중치: 35%
-# - AI 가중치: 65%
-# - 수익률: +352.73%
-# - 샤프비율: 2.51
+#
+# 역할 요약:
+#   모멘텀 점수와 AI 확률을 가중 평균하여 최종 종목 선정.
+#   두 전략의 장점을 결합: 모멘텀의 안정성 + AI의 패턴 인식.
+#
+# 핵심 알고리즘 (predict 메서드):
+#   1. 모멘텀 점수(score_df) 추출 및 0~1 정규화 (min-max scaling)
+#      정규화 공식: (x - min) / (max - min + 1e-8)
+#   2. AI 확률(probability) 추출 (이미 0~1 범위)
+#   3. 두 점수를 가중 합산:
+#      hybrid_score = m_score × 0.35 + probability × 0.65
+#   4. hybrid_score 내림차순으로 Top N 선정
+#
+# 가중치 최적화 결과:
+#   모멘텀 35% + AI 65% → 수익률 +352.73%, 샤프 2.51
+#   (백테스트 기반 최적값, hybrid_trading.py에서도 동일 사용)
+#
+# 준비 과정 (prepare 메서드):
+#   1. AIStrategy(XGBoost) 학습: train_df, feature_cols
+#   2. CustomStrategy 모멘텀 계산: price_df의 화요일 필터 → score_df, correlation_df
+#
+# 주요 클래스/함수:
+#   HybridStrategy           → 전략 클래스
+#   create_hybrid_strategy() → 팩토리 함수 (초기화 + prepare 일괄)
+#
+# 의존 관계:
+#   ← strategy.py  (CustomStrategy, prepare_price_data, filter_tuesday)
+#   ← ai_strategy.py (AIStrategy, XGB_PARAMS)
+#   → ai_backtest.py (run_ai_backtest의 strategy 인자로 전달)
+#   → hybrid_trading.py (라이브 트레이딩)
+#   → run_hybrid_backtest.py (백테스트 실행기)
 # ============================================
 
 import pandas as pd
@@ -152,37 +177,40 @@ class HybridStrategy:
         if date_df.empty:
             return pd.DataFrame()
         
-        # ----- 모멘텀 점수 -----
+        # ----- 모멘텀 점수 추출 (SPY 제외) -----
         if date_ts not in self.score_df.index:
             return pd.DataFrame()
-        
+
         m_scores = self.score_df.loc[date_ts].drop(labels=['SPY'], errors='ignore').dropna()
-        
+
         if m_scores.empty:
             return pd.DataFrame()
-        
-        # ----- AI 확률 -----
+
+        # ----- AI 확률 예측 (XGBoost) -----
         ai_pred = self.ai_strategy.predict(date_df, feature_cols, date)
-        
+
         if ai_pred.empty:
             return pd.DataFrame()
-        
-        # ----- 정규화 (0~1) -----
+
+        # ----- 모멘텀 점수 정규화 (0~1, min-max scaling) -----
+        # AI 확률은 이미 0~1 범위이므로 모멘텀만 정규화하여 동일 스케일로 맞춤
         m_min, m_max = m_scores.min(), m_scores.max()
-        m_norm = (m_scores - m_min) / (m_max - m_min + 1e-8)
-        
-        # ----- 합치기 -----
+        m_norm = (m_scores - m_min) / (m_max - m_min + 1e-8)  # 1e-8: 분모 0 방지
+
+        # ----- 두 점수 합치기 (symbol 기준 join) -----
         merged = ai_pred.copy()
         merged['m_score'] = merged['symbol'].map(m_norm)
-        merged = merged.dropna()
-        
+        merged = merged.dropna()  # 양쪽 점수 모두 있는 종목만 유지
+
         if merged.empty:
             return pd.DataFrame()
-        
-        # ----- 가중 평균 -----
-        merged['hybrid_score'] = (merged['m_score'] * self.weight_m + 
+
+        # ----- 가중 평균으로 최종 hybrid_score 계산 -----
+        # hybrid_score = 모멘텀 × 35% + AI확률 × 65%
+        merged['hybrid_score'] = (merged['m_score'] * self.weight_m +
                                    merged['probability'] * self.weight_ai)
-        
+
+        # 내림차순 정렬 (가장 높은 점수가 Top 순위)
         merged = merged.sort_values('hybrid_score', ascending=False)
         
         return merged
