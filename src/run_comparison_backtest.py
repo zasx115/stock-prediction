@@ -460,7 +460,7 @@ def run_hybrid_backtest(strategy, test_features, initial_capital=INITIAL_CAPITAL
                         sell_amount = sell_shares * sell_price
                         commission = sell_amount * _sell_comm
                         cash += sell_amount - commission
-                        ret_pct = (sell_price - info['avg_price']) / info['avg_price'] * 100
+                        ret_pct = (sell_price - holdings[symbol]['avg_price']) / holdings[symbol]['avg_price'] * 100
                         completed_trades.append({'return_pct': ret_pct})
                         holdings[symbol]['shares'] -= sell_shares
                         if holdings[symbol]['shares'] <= 0:
