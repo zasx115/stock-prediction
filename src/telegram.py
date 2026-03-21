@@ -208,10 +208,15 @@ def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None):
                 f"신호: BUY\n{picks_text}"
             )
         else:
+            rank_text = ""
+            for i, sym in enumerate(picks):
+                score = scores[i] if i < len(scores) else 0
+                rank_text += f"  {i+1}위 : {sym} ({score:.4f})\n"
+            rank_block = f"\n종목 분석\n{rank_text}" if rank_text else ""
             signal_text = (
                 f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
                 f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
-                f"신호: HOLD\n"
+                f"신호: {sig_type}\n{rank_block}"
             )
 
     strategy_label = f" [{strategy}]" if strategy else ""
