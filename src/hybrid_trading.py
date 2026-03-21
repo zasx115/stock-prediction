@@ -663,9 +663,19 @@ class HybridTradingStrategy:
         if not is_bullish:
             print(f"⚠️ 시장 필터링 발동: 평균 1개월 수익률 = {market_momentum:.4f} <= 0")
             print("   → HOLD (기존 보유 유지)")
+            # top3 스코어 계산 (참고용)
+            top_picks = []
+            top_scores = []
+            available_score_dates = self.score_df.index[self.score_df.index <= date_ts]
+            if len(available_score_dates) > 0:
+                score_ts = available_score_dates[-1]
+                row = self.score_df.loc[score_ts].drop(labels=['SPY'], errors='ignore').dropna()
+                top3 = row.nlargest(3)
+                top_picks = list(top3.index)
+                top_scores = [float(v) for v in top3.values]
             return {
-                'picks': [],
-                'scores': [],
+                'picks': top_picks,
+                'scores': top_scores,
                 'allocations': [],
                 'prices': {},
                 'market_filter': True,
