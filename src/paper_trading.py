@@ -12,7 +12,7 @@
 #   2. CustomStrategy.prepare() → 상관관계 + 모멘텀 점수 계산
 #   3. 오늘이 화요일이면: 종목 선정 → 신호 발송 → Sheets 기록
 #   4. 보유 종목 평가 (Sheets의 Holdings 기반) → 포트폴리오 Telegram 발송
-#   5. 손절 라인(-STOP_LOSS%) 도달 종목 체크 → 알림
+#   5. 손절 체크: 트레일링 스탑 (매수일 이후 고점 대비 -7%) → 알림
 #   6. 일별/월별/연간 가치 기록 (Sheets)
 #
 # 모멘텀 전략 vs 하이브리드 전략 분리:
@@ -604,41 +604,86 @@ def print_rebalancing(rebalancing):
     print("=" * 60)
 
 
+TRAILING_STOP_PCT = 0.07  # 고점 대비 -7% (트레일링 스탑)
+
+
+def _get_peak_price(symbol, buy_date):
+    """
+    매수일부터 현재까지의 최고가 조회 (트레일링 스탑 기준)
+
+    Args:
+        symbol: 티커
+        buy_date: 매수일 (문자열 'YYYY-MM-DD' 또는 날짜형)
+
+    Returns:
+        float: 기간 내 최고가, 조회 실패 시 None
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(start=str(buy_date)[:10])
+        if not hist.empty:
+            return float(hist["High"].max())
+    except Exception as e:
+        print(f"  Peak price error ({symbol}): {e}")
+    return None
+
+
 def check_stop_loss(sheets):
     """
-    손절 체크 (알림만, 실제 매도는 수동)
+    트레일링 스탑 체크 (알림만, 실제 매도는 수동)
+
+    로직: 매수일 이후 최고가 대비 -TRAILING_STOP_PCT% 이하이면 알림
+    고점 조회 실패 시 기존 고정 손절(STOP_LOSS)로 폴백
     """
     print("=" * 60)
-    print("Stop Loss Check")
+    print("Trailing Stop Check")
     print("=" * 60)
-    
+    print(f"  기준: 고점 대비 -{TRAILING_STOP_PCT*100:.0f}%")
+
     portfolio = get_portfolio_from_sheets(sheets)
     stop_loss_alerts = []
-    
+
     for holding in portfolio["holdings"]:
         symbol = holding["symbol"]
-        return_pct = holding["profit_loss_pct"] / 100
-        
-        print(f"  {symbol}: Avg ${holding['avg_price']:.2f} | "
-              f"Now ${holding['current_price']:.2f} | {return_pct*100:+.2f}%")
-        
-        if return_pct <= STOP_LOSS:
+        current_price = holding["current_price"]
+        avg_price = holding["avg_price"]
+        buy_date = holding.get("buy_date", "")
+
+        # 매수일 이후 최고가 조회
+        peak_price = _get_peak_price(symbol, buy_date) if buy_date else None
+
+        if peak_price:
+            stop_price = peak_price * (1 - TRAILING_STOP_PCT)
+            triggered = current_price <= stop_price
+            pct_from_peak = (current_price - peak_price) / peak_price * 100
+            print(f"  {symbol}: Avg ${avg_price:.2f} | Peak ${peak_price:.2f} | "
+                  f"Now ${current_price:.2f} | Peak대비 {pct_from_peak:+.2f}%")
+        else:
+            # 고점 조회 실패 → 고정 손절 폴백
+            return_pct = (current_price - avg_price) / avg_price
+            triggered = return_pct <= STOP_LOSS
+            pct_from_peak = return_pct * 100
+            print(f"  {symbol}: Avg ${avg_price:.2f} | Now ${current_price:.2f} | "
+                  f"{pct_from_peak:+.2f}% (고점조회실패→고정손절)")
+
+        if triggered:
             stop_loss_alerts.append({
                 "symbol": symbol,
                 "shares": holding["shares"],
-                "avg_price": holding["avg_price"],
-                "current_price": holding["current_price"],
-                "return_pct": round(return_pct * 100, 2)
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "peak_price": peak_price,
+                "return_pct": round(pct_from_peak, 2)
             })
-            print(f"  >>> STOP LOSS ALERT: {symbol} | {return_pct*100:.2f}%")
-    
+            print(f"  >>> TRAILING STOP ALERT: {symbol} | 고점대비 {pct_from_peak:.2f}%")
+
     if stop_loss_alerts:
         send_stop_loss(stop_loss_alerts)
-        print(f"\n⚠️ {len(stop_loss_alerts)} stop loss alerts!")
+        print(f"\n⚠️ {len(stop_loss_alerts)} trailing stop alerts!")
         print("→ 한투 앱에서 수동 매도 필요!")
     else:
-        print("\nNo stop loss needed")
-    
+        print("\nNo trailing stop triggered")
+
     return stop_loss_alerts
 
 
