@@ -209,12 +209,15 @@ def get_today_signal(strategy=None):
     
     if result is None:
         print("\nMarket downtrend - HOLD")
+        # 참고용 top 3 종목 (시장 하락 중에도 스코어 상위 표시)
+        top_row = score_df.loc[last_tuesday].dropna() if last_tuesday in score_df.index else pd.Series(dtype=float)
+        top3 = top_row.nlargest(3)
         return {
             "date": last_tuesday,
             "signal": "HOLD",
             "message": "Market momentum <= 0",
-            "picks": [],
-            "scores": [],
+            "picks": top3.index.tolist(),
+            "scores": top3.values.tolist(),
             "allocations": [],
             "prices": {},
             "market_momentum": market_momentum,
@@ -304,11 +307,14 @@ def get_daily_ref_signal(strategy=None):
     spy_price = get_spy_price()
 
     if result is None:
+        # 참고용 top 3 종목 (시장 하락 중에도 스코어 상위 표시)
+        top_row = score_df.loc[latest_date].dropna() if latest_date in score_df.index else pd.Series(dtype=float)
+        top3 = top_row.nlargest(3)
         return {
             "date": latest_date,
             "signal": "HOLD",
-            "picks": [],
-            "scores": [],
+            "picks": top3.index.tolist(),
+            "scores": top3.values.tolist(),
             "allocations": [],
             "prices": {},
             "market_momentum": market_momentum,
