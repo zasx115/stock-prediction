@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # ============================================
 # 파일명: src/run_comparison_backtest.py
-# 설명: 5가지 전략 비교 백테스트
+# 설명: 6가지 전략 비교 백테스트
 #
 # 전략 목록:
-#   1. 모멘텀 전략          (2025-01-01 ~ 현재)
-#   2. 하이브리드 전략       (학습: 2020-01-01~2024-12-31, 백테스트: 2025-01-01~현재)
-#   3. 하이브리드 + Kelly    (동적 포지션 사이징)
-#   4. 하이브리드 + Trailing (트레일링 스탑 -7%)
-#   5. 하이브리드 + Kelly + Trailing
+#   1. 모멘텀                              (2025-01-01 ~ 현재)
+#   2. 모멘텀 + 트레일링 스탑
+#   3. 모멘텀 + 트레일링 스탑 + Kelly
+#   4. 하이브리드                          (학습: 2020-01-01~2024-12-31)
+#   5. 하이브리드 + 트레일링 스탑
+#   6. 하이브리드 + 트레일링 스탑 + Kelly
 #   + SPY 벤치마크
 #
 # 실행:
 #   python run_comparison_backtest.py
-#   python run_comparison_backtest.py --output result.png
+#   python run_comparison_backtest.py --output result.png --initial_capital 10000
 # ============================================
 
 import sys
@@ -112,9 +113,9 @@ def calc_kelly_allocations(completed_trades, n_picks=3):
 
     n_picks개 종목에 Kelly 비중을 동일하게 적용 후 정규화.
     Half-Kelly 사용 시 f* / 2.
+    거래 수 부족 시 기본 비중 반환.
     """
     if len(completed_trades) < KELLY_MIN_TRADES:
-        # 데이터 부족 → 기본 비중
         if n_picks == 1:
             return [1.0]
         elif n_picks == 2:
@@ -133,19 +134,17 @@ def calc_kelly_allocations(completed_trades, n_picks=3):
     R = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
 
     kelly_f = (W * R - (1 - W)) / R
-    kelly_f = max(kelly_f, 0.0)  # 음수 → 0 (매수 안 함)
+    kelly_f = max(kelly_f, 0.0)
 
     if KELLY_HALF:
         kelly_f = kelly_f / 2
 
-    # n_picks개 모두 동일한 kelly_f 적용 후 합산이 1 넘으면 정규화
     total = kelly_f * n_picks
     if total > 1.0:
-        per_stock = kelly_f / total  # 정규화
+        per_stock = kelly_f / total
     else:
         per_stock = kelly_f
 
-    # 첫 종목에 더 비중 (kelly_f 기준 내림차순 균등 분배)
     if n_picks == 1:
         return [min(per_stock * n_picks, 1.0)]
     elif n_picks == 2:
@@ -153,7 +152,6 @@ def calc_kelly_allocations(completed_trades, n_picks=3):
     else:
         alloc = [per_stock * 1.3, per_stock * 1.0, per_stock * 0.7]
 
-    # 합이 1 초과하면 재정규화
     total_alloc = sum(alloc[:n_picks])
     if total_alloc > 0.95:
         alloc = [a / total_alloc * 0.95 for a in alloc]
@@ -172,9 +170,9 @@ def run_momentum_backtest(df, start_date, initial_capital=INITIAL_CAPITAL,
 
     Args:
         df: 원시 데이터 (워밍업 기간 포함)
-        start_date: 포트폴리오 추적 시작일
-        use_trailing_stop: 트레일링 스탑 사용 여부
-        use_kelly: Kelly Criterion 사용 여부
+        start_date: 포트폴리오 가치 추적 시작일
+        use_trailing_stop: 트레일링 스탑 사용 여부 (False=고정 -7%)
+        use_kelly: Kelly Criterion 비중 계산 사용 여부
     """
     _buy_comm = BUY_COMMISSION
     _sell_comm = SELL_COMMISSION
@@ -191,7 +189,7 @@ def run_momentum_backtest(df, start_date, initial_capital=INITIAL_CAPITAL,
     score_df, correlation_df, ret_1m = strategy.prepare(price_df, tuesday_df)
     score_dates = score_df.dropna(how='all').index.tolist()
 
-    # 화요일 → 수요일 매핑
+    # 화요일 → 수요일 T+1 매핑
     all_dates = sorted(df['date'].unique())
     date_weekday = {d: pd.Timestamp(d).day_name() for d in all_dates}
     trade_map = {}
@@ -202,7 +200,6 @@ def run_momentum_backtest(df, start_date, initial_capital=INITIAL_CAPITAL,
                     trade_map[d] = all_dates[j]
                     break
 
-    # 시뮬레이션 상태
     portfolio_values = []
     completed_trades = []  # Kelly 계산용 완료 거래
     cash = initial_capital
@@ -220,7 +217,6 @@ def run_momentum_backtest(df, start_date, initial_capital=INITIAL_CAPITAL,
                 continue
             current_price = price_dict[symbol]
 
-            # 트레일링 스탑: 고점 갱신
             if use_trailing_stop:
                 info['peak_price'] = max(info['peak_price'], current_price)
                 stop_price = info['peak_price'] * (1 - TRAILING_STOP_PCT)
@@ -343,16 +339,15 @@ def run_momentum_backtest(df, start_date, initial_capital=INITIAL_CAPITAL,
 # ============================================
 
 def run_hybrid_backtest(strategy, test_features, initial_capital=INITIAL_CAPITAL,
-                        use_trailing_stop=False, use_kelly=False,
-                        label='Hybrid'):
+                        use_trailing_stop=False, use_kelly=False, label='Hybrid'):
     """
     하이브리드 전략 백테스트 (Kelly / Trailing Stop 옵션 포함)
 
     Args:
         strategy: prepare() 완료된 HybridStrategy 인스턴스
         test_features: 테스트 피처 DataFrame
-        use_trailing_stop: 트레일링 스탑 사용 여부
-        use_kelly: Kelly Criterion 사용 여부
+        use_trailing_stop: 트레일링 스탑 사용 여부 (False=고정 -7%)
+        use_kelly: Kelly Criterion 비중 계산 사용 여부
         label: 출력용 전략명
     """
     _buy_comm = BUY_COMMISSION
@@ -363,7 +358,7 @@ def run_hybrid_backtest(strategy, test_features, initial_capital=INITIAL_CAPITAL
     test_df['date'] = pd.to_datetime(test_df['date'])
     dates = sorted(test_df['date'].unique())
 
-    print(f"\n[{label}] 백테스트: {dates[0].strftime('%Y-%m-%d')} ~ {dates[-1].strftime('%Y-%m-%d')}")
+    print(f"\n  [{label}] {dates[0].strftime('%Y-%m-%d')} ~ {dates[-1].strftime('%Y-%m-%d')}, {len(dates)}일")
 
     tuesday_dates = [d for d in dates if d.day_name() == 'Tuesday']
     trade_map = {}
@@ -516,27 +511,25 @@ def run_hybrid_backtest(strategy, test_features, initial_capital=INITIAL_CAPITAL
 def print_summary(results, spy_return):
     """성과 요약 테이블 출력"""
     print()
-    print("=" * 80)
-    print("  전략 비교 결과")
-    print("=" * 80)
-    header = f"{'전략':<30} {'총수익률':>9} {'CAGR':>8} {'MDD':>8} {'샤프':>6} {'Alpha':>8}"
+    print("=" * 85)
+    print("  6가지 전략 비교 결과")
+    print("=" * 85)
+    header = f"{'전략':<35} {'총수익률':>9} {'CAGR':>8} {'MDD':>8} {'샤프':>6} {'Alpha':>8}"
     print(header)
-    print("-" * 80)
-
-    # SPY 먼저 출력
-    print(f"{'SPY (벤치마크)':<30} {spy_return*100:>8.2f}%  {'':>7} {'':>7} {'':>5} {'':>7}")
-    print("-" * 80)
+    print("-" * 85)
+    print(f"{'SPY (벤치마크)':<35} {spy_return*100:>8.2f}%")
+    print("-" * 85)
 
     for name, m in results.items():
         print(
-            f"{name:<30} "
+            f"{name:<35} "
             f"{m['total_return']*100:>8.2f}%  "
             f"{m['cagr']*100:>6.2f}%  "
             f"{m['mdd']*100:>6.2f}%  "
             f"{m['sharpe']:>5.2f}  "
             f"{m['alpha']*100:>+7.2f}%"
         )
-    print("=" * 80)
+    print("=" * 85)
 
 
 # ============================================
@@ -545,22 +538,28 @@ def print_summary(results, spy_return):
 
 def plot_comparison(portfolios, spy_series, results, output_path):
     """
-    5개 전략 + SPY 수익률 비교 차트
+    6개 전략 + SPY 수익률 비교 차트
 
-    패널 1: 누적 수익률 곡선 (정규화 100 기준)
-    패널 2: MDD 비교 바 차트
-    패널 3: 샤프/Alpha 비교 바 차트
+    패널 1 (대형): 누적 수익률 곡선 (정규화 100 기준)
+    패널 2: MDD 바 차트
+    패널 3: 샤프 비율 바 차트
+    패널 4: 총 수익률 바 차트
+    패널 5: Alpha vs SPY 바 차트
     """
+    # 전략별 색상
     colors = {
-        '1. 모멘텀':                     '#2196F3',
-        '2. 하이브리드':                  '#4CAF50',
-        '3. 하이브리드+Kelly':            '#FF9800',
-        '4. 하이브리드+TrailingStop':     '#E91E63',
-        '5. 하이브리드+Kelly+Trailing':   '#9C27B0',
+        '1. 모멘텀':                          '#2196F3',   # 파랑
+        '2. 모멘텀+Trailing':                 '#03A9F4',   # 하늘
+        '3. 모멘텀+Trailing+Kelly':           '#00BCD4',   # 청록
+        '4. 하이브리드':                       '#4CAF50',   # 초록
+        '5. 하이브리드+Trailing':             '#FF9800',   # 주황
+        '6. 하이브리드+Trailing+Kelly':       '#9C27B0',   # 보라
     }
 
-    fig = plt.figure(figsize=(16, 14))
-    gs = fig.add_gridspec(3, 2, height_ratios=[3, 1, 1], hspace=0.45, wspace=0.35)
+    short_names = ['모멘텀', '+Trail', '+T+K', '하이브리드', '+Trail', '+T+K']
+
+    fig = plt.figure(figsize=(18, 14))
+    gs = fig.add_gridspec(3, 2, height_ratios=[3, 1, 1], hspace=0.50, wspace=0.35)
 
     ax_main = fig.add_subplot(gs[0, :])   # 수익률 곡선 (전체 너비)
     ax_mdd  = fig.add_subplot(gs[1, 0])
@@ -570,16 +569,18 @@ def plot_comparison(portfolios, spy_series, results, output_path):
 
     today_str = datetime.now().strftime('%Y-%m-%d')
     fig.suptitle(
-        f'전략 비교 백테스트  |  하이브리드 학습: {HYBRID_TRAIN_START}~{HYBRID_TRAIN_END}'
-        f'  |  백테스트: {HYBRID_TEST_START}~{today_str}',
-        fontsize=13, fontweight='bold', y=0.98
+        f'6가지 전략 비교 백테스트\n'
+        f'모멘텀: {MOMENTUM_START}~{today_str}  |  '
+        f'하이브리드 학습: {HYBRID_TRAIN_START}~{HYBRID_TRAIN_END}  |  '
+        f'하이브리드 테스트: {HYBRID_TEST_START}~{today_str}',
+        fontsize=12, fontweight='bold', y=0.99
     )
 
     # ── 패널 1: 누적 수익률 ──
     if not spy_series.empty:
         ax_main.plot(spy_series.index, spy_series.values,
-                     label='SPY', color='gray', linewidth=2,
-                     linestyle='--', alpha=0.8)
+                     label='SPY', color='gray', linewidth=2.5,
+                     linestyle='--', alpha=0.9)
 
     for name, port_df in portfolios.items():
         port = port_df.copy()
@@ -596,14 +597,19 @@ def plot_comparison(portfolios, spy_series, results, output_path):
     ax_main.grid(True, alpha=0.3)
     ax_main.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
 
-    # ── 패널 2~5: 지표 바 차트 ──
+    # ── 공통: 바 차트 설정 ──
     names = list(results.keys())
-    short_names = ['모멘텀', '하이브리드', '+Kelly', '+Trailing', '+K+T']
     x = range(len(names))
-
     bar_colors = [colors.get(n, '#607D8B') for n in names]
 
-    # MDD
+    def add_bar_labels(ax, bars, values, fmt='{:.1f}%', positive_offset=0.3, negative_offset=-0.3):
+        for bar, v in zip(bars, values):
+            offset = positive_offset if v >= 0 else negative_offset
+            va = 'bottom' if v >= 0 else 'top'
+            ax.text(bar.get_x() + bar.get_width() / 2, v + offset,
+                    fmt.format(v), ha='center', va=va, fontsize=7)
+
+    # ── 패널 2: MDD ──
     mdd_vals = [results[n]['mdd'] * 100 for n in names]
     bars = ax_mdd.bar(x, mdd_vals, color=bar_colors, alpha=0.8)
     ax_mdd.set_title('MDD (%)', fontsize=10)
@@ -611,10 +617,10 @@ def plot_comparison(portfolios, spy_series, results, output_path):
     ax_mdd.set_xticklabels(short_names, fontsize=8)
     ax_mdd.grid(True, alpha=0.3, axis='y')
     for bar, v in zip(bars, mdd_vals):
-        ax_mdd.text(bar.get_x() + bar.get_width()/2, v - 0.3,
+        ax_mdd.text(bar.get_x() + bar.get_width() / 2, v - 0.3,
                     f'{v:.1f}%', ha='center', va='top', fontsize=7)
 
-    # 샤프
+    # ── 패널 3: 샤프 ──
     shp_vals = [results[n]['sharpe'] for n in names]
     bars = ax_shp.bar(x, shp_vals, color=bar_colors, alpha=0.8)
     ax_shp.set_title('Sharpe Ratio', fontsize=10)
@@ -622,10 +628,10 @@ def plot_comparison(portfolios, spy_series, results, output_path):
     ax_shp.set_xticklabels(short_names, fontsize=8)
     ax_shp.grid(True, alpha=0.3, axis='y')
     for bar, v in zip(bars, shp_vals):
-        ax_shp.text(bar.get_x() + bar.get_width()/2, v + 0.02,
+        ax_shp.text(bar.get_x() + bar.get_width() / 2, v + 0.02,
                     f'{v:.2f}', ha='center', va='bottom', fontsize=7)
 
-    # 총수익률
+    # ── 패널 4: 총 수익률 ──
     ret_vals = [results[n]['total_return'] * 100 for n in names]
     bars = ax_ret.bar(x, ret_vals, color=bar_colors, alpha=0.8)
     ax_ret.set_title('총 수익률 (%)', fontsize=10)
@@ -633,26 +639,18 @@ def plot_comparison(portfolios, spy_series, results, output_path):
     ax_ret.set_xticklabels(short_names, fontsize=8)
     ax_ret.axhline(0, color='black', linewidth=0.5)
     ax_ret.grid(True, alpha=0.3, axis='y')
-    for bar, v in zip(bars, ret_vals):
-        offset = 0.3 if v >= 0 else -0.3
-        va = 'bottom' if v >= 0 else 'top'
-        ax_ret.text(bar.get_x() + bar.get_width()/2, v + offset,
-                    f'{v:.1f}%', ha='center', va=va, fontsize=7)
+    add_bar_labels(ax_ret, bars, ret_vals)
 
-    # Alpha
+    # ── 패널 5: Alpha ──
     alp_vals = [results[n]['alpha'] * 100 for n in names]
-    bar_c = ['#4CAF50' if v >= 0 else '#F44336' for v in alp_vals]
-    bars = ax_alp.bar(x, alp_vals, color=bar_c, alpha=0.8)
+    alp_colors = ['#4CAF50' if v >= 0 else '#F44336' for v in alp_vals]
+    bars = ax_alp.bar(x, alp_vals, color=alp_colors, alpha=0.8)
     ax_alp.set_title('Alpha vs SPY (%)', fontsize=10)
     ax_alp.set_xticks(list(x))
     ax_alp.set_xticklabels(short_names, fontsize=8)
     ax_alp.axhline(0, color='black', linewidth=0.5)
     ax_alp.grid(True, alpha=0.3, axis='y')
-    for bar, v in zip(bars, alp_vals):
-        offset = 0.1 if v >= 0 else -0.1
-        va = 'bottom' if v >= 0 else 'top'
-        ax_alp.text(bar.get_x() + bar.get_width()/2, v + offset,
-                    f'{v:+.1f}%', ha='center', va=va, fontsize=7)
+    add_bar_labels(ax_alp, bars, alp_vals, fmt='{:+.1f}%', positive_offset=0.1, negative_offset=-0.1)
 
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\n차트 저장: {output_path}")
@@ -663,7 +661,7 @@ def plot_comparison(portfolios, spy_series, results, output_path):
 # ============================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='5가지 전략 비교 백테스트')
+    parser = argparse.ArgumentParser(description='6가지 전략 비교 백테스트')
     parser.add_argument('--initial_capital', type=float, default=INITIAL_CAPITAL,
                         help=f'초기 자본금 (기본: {INITIAL_CAPITAL})')
     parser.add_argument('--output', type=str, default='comparison_backtest.png',
@@ -676,7 +674,7 @@ def main():
     today_str = datetime.now().strftime('%Y-%m-%d')
 
     print("=" * 65)
-    print("  5가지 전략 비교 백테스트")
+    print("  6가지 전략 비교 백테스트")
     print("=" * 65)
     print(f"  모멘텀 기간     : {MOMENTUM_START} ~ {today_str}")
     print(f"  하이브리드 학습  : {HYBRID_TRAIN_START} ~ {HYBRID_TRAIN_END}")
@@ -716,16 +714,16 @@ def main():
     feature_cols   = get_feature_columns(train_features)
     print(f"    피처 수: {len(feature_cols)}, 학습: {len(train_features):,}, 테스트: {len(test_features):,}")
 
-    # ── [4] 하이브리드 전략 학습 (1번만) ──
+    # ── [4] 하이브리드 전략 학습 (1번만, 6개 중 3개가 공유) ──
     print("\n[6] 하이브리드 전략 AI 학습 중...")
     price_df_test = prepare_price_data(test_raw)
     strategy = HybridStrategy()
     strategy.prepare(train_features, price_df_test, feature_cols)
 
-    # ── [5] SPY 시계열 ──
+    # ── [5] SPY 시계열 (두 전략 모두 같은 시작일 기준) ──
     spy_series = get_spy_series(test_raw, HYBRID_TEST_START)
 
-    # ── [6] 5가지 백테스트 실행 ──
+    # ── [6] 6가지 백테스트 실행 ──
     print("\n" + "=" * 65)
     print("  백테스트 실행")
     print("=" * 65)
@@ -733,7 +731,7 @@ def main():
     portfolios = {}
     results = {}
 
-    # 1. 모멘텀
+    # 1. 모멘텀 (고정 손절)
     print("\n[전략 1] 모멘텀")
     p1 = run_momentum_backtest(
         momentum_raw, MOMENTUM_START,
@@ -743,49 +741,58 @@ def main():
     portfolios['1. 모멘텀'] = p1
     results['1. 모멘텀'] = calc_metrics(p1, spy_series, args.initial_capital)
 
-    # 2. 하이브리드
-    print("\n[전략 2] 하이브리드")
-    p2 = run_hybrid_backtest(
+    # 2. 모멘텀 + 트레일링 스탑
+    print("\n[전략 2] 모멘텀 + 트레일링 스탑")
+    p2 = run_momentum_backtest(
+        momentum_raw, MOMENTUM_START,
+        initial_capital=args.initial_capital,
+        use_trailing_stop=True, use_kelly=False
+    )
+    portfolios['2. 모멘텀+Trailing'] = p2
+    results['2. 모멘텀+Trailing'] = calc_metrics(p2, spy_series, args.initial_capital)
+
+    # 3. 모멘텀 + 트레일링 스탑 + Kelly
+    print("\n[전략 3] 모멘텀 + 트레일링 스탑 + Kelly")
+    p3 = run_momentum_backtest(
+        momentum_raw, MOMENTUM_START,
+        initial_capital=args.initial_capital,
+        use_trailing_stop=True, use_kelly=True
+    )
+    portfolios['3. 모멘텀+Trailing+Kelly'] = p3
+    results['3. 모멘텀+Trailing+Kelly'] = calc_metrics(p3, spy_series, args.initial_capital)
+
+    # 4. 하이브리드 (고정 손절)
+    print("\n[전략 4] 하이브리드")
+    p4 = run_hybrid_backtest(
         strategy, test_features,
         initial_capital=args.initial_capital,
         use_trailing_stop=False, use_kelly=False,
         label='하이브리드'
     )
-    portfolios['2. 하이브리드'] = p2
-    results['2. 하이브리드'] = calc_metrics(p2, spy_series, args.initial_capital)
+    portfolios['4. 하이브리드'] = p4
+    results['4. 하이브리드'] = calc_metrics(p4, spy_series, args.initial_capital)
 
-    # 3. 하이브리드 + Kelly
-    print("\n[전략 3] 하이브리드 + Kelly")
-    p3 = run_hybrid_backtest(
-        strategy, test_features,
-        initial_capital=args.initial_capital,
-        use_trailing_stop=False, use_kelly=True,
-        label='하이브리드+Kelly'
-    )
-    portfolios['3. 하이브리드+Kelly'] = p3
-    results['3. 하이브리드+Kelly'] = calc_metrics(p3, spy_series, args.initial_capital)
-
-    # 4. 하이브리드 + Trailing Stop
-    print("\n[전략 4] 하이브리드 + TrailingStop")
-    p4 = run_hybrid_backtest(
-        strategy, test_features,
-        initial_capital=args.initial_capital,
-        use_trailing_stop=True, use_kelly=False,
-        label='하이브리드+TrailingStop'
-    )
-    portfolios['4. 하이브리드+TrailingStop'] = p4
-    results['4. 하이브리드+TrailingStop'] = calc_metrics(p4, spy_series, args.initial_capital)
-
-    # 5. 하이브리드 + Kelly + Trailing
-    print("\n[전략 5] 하이브리드 + Kelly + Trailing")
+    # 5. 하이브리드 + 트레일링 스탑
+    print("\n[전략 5] 하이브리드 + 트레일링 스탑")
     p5 = run_hybrid_backtest(
         strategy, test_features,
         initial_capital=args.initial_capital,
-        use_trailing_stop=True, use_kelly=True,
-        label='하이브리드+Kelly+Trailing'
+        use_trailing_stop=True, use_kelly=False,
+        label='하이브리드+Trailing'
     )
-    portfolios['5. 하이브리드+Kelly+Trailing'] = p5
-    results['5. 하이브리드+Kelly+Trailing'] = calc_metrics(p5, spy_series, args.initial_capital)
+    portfolios['5. 하이브리드+Trailing'] = p5
+    results['5. 하이브리드+Trailing'] = calc_metrics(p5, spy_series, args.initial_capital)
+
+    # 6. 하이브리드 + 트레일링 스탑 + Kelly
+    print("\n[전략 6] 하이브리드 + 트레일링 스탑 + Kelly")
+    p6 = run_hybrid_backtest(
+        strategy, test_features,
+        initial_capital=args.initial_capital,
+        use_trailing_stop=True, use_kelly=True,
+        label='하이브리드+Trailing+Kelly'
+    )
+    portfolios['6. 하이브리드+Trailing+Kelly'] = p6
+    results['6. 하이브리드+Trailing+Kelly'] = calc_metrics(p6, spy_series, args.initial_capital)
 
     # ── [7] 결과 출력 ──
     spy_return = (spy_series.iloc[-1] - spy_series.iloc[0]) / spy_series.iloc[0] if not spy_series.empty else 0

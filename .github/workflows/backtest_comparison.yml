@@ -1,0 +1,73 @@
+# ============================================
+# 파일명: .github/workflows/backtest_comparison.yml
+# 설명: 6가지 전략 비교 백테스트 워크플로우
+#
+# 전략 목록:
+#   1. 모멘텀                         (2025-01-01 ~ 현재)
+#   2. 모멘텀 + 트레일링 스탑
+#   3. 모멘텀 + 트레일링 스탑 + Kelly
+#   4. 하이브리드                     (학습: 2020-01-01~2024-12-31)
+#   5. 하이브리드 + 트레일링 스탑
+#   6. 하이브리드 + 트레일링 스탑 + Kelly
+#   + SPY 벤치마크 비교
+#
+# 실행: Actions → Comparison Backtest → Run workflow
+# 결과: 로그에서 요약 테이블 확인 + Artifacts에서 차트 다운로드
+# ============================================
+
+name: Comparison Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      initial_capital:
+        description: '초기 자본금 (USD)'
+        required: false
+        default: '3000'
+      output:
+        description: '차트 파일명'
+        required: false
+        default: 'comparison_backtest.png'
+
+jobs:
+  comparison-backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-comparison-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn matplotlib python-dotenv lxml
+
+      - name: Run Comparison Backtest
+        working-directory: ./src
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python run_comparison_backtest.py \
+            --initial_capital "${{ github.event.inputs.initial_capital }}" \
+            --output "../${{ github.event.inputs.output }}"
+
+      - name: Upload result chart
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-backtest-result
+          path: ${{ github.event.inputs.output }}
+          retention-days: 30
