@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # ============================================
 # 파일명: src/run_model_experiment.py
-# 설명: XGBoost 하이퍼파라미터 실험 비교 백테스트
+# 설명: XGBoost 하이퍼파라미터 실험 비교 백테스트 (Walk-Forward Expanding Window)
 #
 # 역할 요약:
 #   다양한 XGBoost 파라미터 조합으로 HybridStrategy를 학습하고
-#   각 실험의 백테스트 성과를 비교하여 최적 파라미터를 탐색.
+#   Walk-Forward(Expanding Window) 방식으로 각 실험의 백테스트 성과를 비교.
+#
+# Walk-Forward 방식 (Expanding Window, 스텝 3개월):
+#   Fold 1: Train [train_start ~ train_end]        → Test [train_end ~ +3M]
+#   Fold 2: Train [train_start ~ train_end+3M]     → Test [train_end+3M ~ +6M]
+#   Fold 3: Train [train_start ~ train_end+6M]     → Test [train_end+6M ~ +9M]
+#   ... backtest_end 까지 반복
 #
 # 실험 목록 (9가지):
 #   0. Base       : 현재 기본값 (max_depth=4, lr=0.03, n_est=1000, spw=3)
@@ -20,11 +26,16 @@
 #
 # 실행 흐름:
 #   1. argparse로 CLI 인자 파싱
-#   2. S&P 500 + SPY 데이터 다운로드 (학습/백테스트)
-#   3. 피처 생성 (create_features)
-#   4. 각 실험별 HybridStrategy 학습 → run_ai_backtest 시뮬레이션
-#   5. 결과 DataFrame 생성 → CSV 저장 + 텍스트 출력
-#   6. 4-subplot 비교 차트 생성 및 PNG 저장
+#   2. 전체 기간 데이터 한 번에 다운로드 (train_start ~ backtest_end)
+#   3. 전체 피처 한 번에 생성 (create_features)
+#   4. Walk-Forward 폴드 생성 (스텝: wf_step_months개월)
+#   5. 폴드별 루프:
+#      - 학습/테스트 데이터 슬라이싱
+#      - 각 실험별 HybridStrategy 재학습 → run_ai_backtest 시뮬레이션
+#      - 폴드 결과 수집
+#   6. 실험별 포트폴리오 체이닝 → 전체 기간 메트릭 계산
+#   7. 결과 DataFrame 생성 → CSV 저장 + 텍스트 출력
+#   8. 4-subplot 비교 차트 생성 및 PNG 저장 (폴드 경계선 포함)
 #
 # 사용법:
 #   python run_model_experiment.py
@@ -33,6 +44,7 @@
 #     --train_end 2020-01-01 \
 #     --backtest_start 2020-01-01 \
 #     --backtest_end 2024-12-31 \
+#     --wf_step_months 3 \
 #     --initial_capital 10000 \
 #     --output experiment_result.png \
 #     --results_csv experiment_results.csv
@@ -41,7 +53,7 @@
 #   ← data.py (get_backtest_data, get_sp500_list)
 #   ← ai_data.py (create_features, get_feature_columns)
 #   ← hybrid_strategy.py (HybridStrategy)
-#   ← ai_backtest.py (run_ai_backtest)
+#   ← ai_backtest.py (run_ai_backtest, calculate_ai_metrics)
 #   ← strategy.py (prepare_price_data)
 #   ← config.py (SP500_BACKUP)
 # ============================================
@@ -64,7 +76,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from data import get_backtest_data, get_sp500_list
 from ai_data import create_features, get_feature_columns
 from hybrid_strategy import HybridStrategy
-from ai_backtest import run_ai_backtest
+from ai_backtest import run_ai_backtest, calculate_ai_metrics
 from strategy import prepare_price_data
 from ai_strategy import XGB_PARAMS
 
@@ -134,7 +146,93 @@ def get_experiments():
 
 
 # ============================================
-# [2] 단일 실험 실행
+# [2] Walk-Forward 폴드 생성
+# ============================================
+
+def generate_walk_forward_folds(train_start, train_end, backtest_end, step_months=3):
+    """
+    Expanding Window Walk-Forward 폴드 목록 생성.
+
+    학습 시작일(train_start)은 고정, 학습 종료일은 스텝마다 확장.
+    테스트 윈도우는 항상 step_months개월.
+
+    Args:
+        train_start (str): 초기 학습 시작일 (YYYY-MM-DD)
+        train_end (str): 초기 학습 종료일 = 첫 테스트 시작일
+        backtest_end (str): 전체 백테스트 종료일
+        step_months (int): 테스트 윈도우 크기 (개월)
+
+    Returns:
+        list of dict: [{'train_start', 'train_end', 'test_start', 'test_end'}, ...]
+    """
+    folds = []
+    test_start = pd.Timestamp(train_end)
+    end = pd.Timestamp(backtest_end)
+
+    while test_start < end:
+        test_end = test_start + pd.DateOffset(months=step_months)
+        if test_end > end:
+            test_end = end
+
+        folds.append({
+            'train_start': train_start,
+            'train_end': test_start.strftime('%Y-%m-%d'),
+            'test_start': test_start.strftime('%Y-%m-%d'),
+            'test_end': test_end.strftime('%Y-%m-%d'),
+        })
+
+        test_start = test_end
+
+    return folds
+
+
+# ============================================
+# [3] 포트폴리오 체이닝 (Walk-Forward 결합)
+# ============================================
+
+def stitch_portfolios(portfolio_dfs, initial_capital):
+    """
+    여러 폴드의 포트폴리오를 하나의 연속 시계열로 연결.
+
+    각 폴드는 initial_capital에서 시작하므로, 이전 폴드의 최종 가치를 기준으로 스케일링.
+
+    Fold 1: [10000 → V1]           (배율 1.0)
+    Fold 2: [10000 → V2] × V1/C   = [V1 → V2*(V1/C)]
+    Fold 3: [10000 → V3] × V2/C   = [V2 → V3*(V2/C)]
+    ...
+
+    Args:
+        portfolio_dfs (list of pd.DataFrame): 각 폴드의 portfolio DataFrame
+        initial_capital (float): 각 폴드의 시작 자본 (동일)
+
+    Returns:
+        pd.DataFrame: 연결된 포트폴리오 시계열
+    """
+    if not portfolio_dfs:
+        return pd.DataFrame()
+
+    stitched = []
+    prev_end_value = initial_capital
+
+    for df in portfolio_dfs:
+        df = df.copy()
+        multiplier = prev_end_value / initial_capital
+
+        for col in ['value', 'cash', 'stock_value']:
+            if col in df.columns:
+                df[col] = df[col] * multiplier
+
+        stitched.append(df)
+        prev_end_value = df['value'].iloc[-1]
+
+    result = pd.concat(stitched, ignore_index=True)
+    result['date'] = pd.to_datetime(result['date'])
+    result = result.sort_values('date').reset_index(drop=True)
+    return result
+
+
+# ============================================
+# [4] 단일 폴드 단일 실험 실행
 # ============================================
 
 def run_single_experiment(exp, train_features, test_features, feature_cols,
@@ -152,7 +250,7 @@ def run_single_experiment(exp, train_features, test_features, feature_cols,
         args: argparse Namespace
 
     Returns:
-        dict: 실험 이름, 설명, 메트릭, portfolio_df
+        dict: 실험 이름, 설명, 메트릭, portfolio_df, trades_df
     """
     strategy = HybridStrategy(
         weight_momentum=args.momentum_weight,
@@ -172,8 +270,9 @@ def run_single_experiment(exp, train_features, test_features, feature_cols,
 
     metrics = result['metrics']
     portfolio_df = result['portfolio']
+    trades_df = result['trades']
 
-    # SPY 수익률 보정 (create_features가 SPY 제외하므로 test_raw에서 직접 계산)
+    # SPY 수익률 보정
     if 'SPY' in test_raw['symbol'].unique():
         spy = test_raw[test_raw['symbol'] == 'SPY'].sort_values('date')
         if len(spy) >= 2:
@@ -186,21 +285,23 @@ def run_single_experiment(exp, train_features, test_features, feature_cols,
         'desc': exp['desc'],
         'metrics': metrics,
         'portfolio': portfolio_df,
+        'trades': trades_df,
     }
 
 
 # ============================================
-# [3] 결과 출력
+# [5] 결과 출력
 # ============================================
 
-def print_results_table(results, args, backtest_end):
+def print_results_table(results, args, backtest_end, folds):
     """실험 결과 텍스트 테이블 출력"""
     print()
     print("=" * 75)
-    print("   Model Experiment Results")
+    print("   Model Experiment Results (Walk-Forward)")
     print("=" * 75)
-    print(f"학습기간    : {args.train_start} ~ {args.train_end}")
-    print(f"백테스트    : {args.backtest_start} ~ {backtest_end}")
+    print(f"학습 초기   : {args.train_start} ~ {args.train_end}")
+    print(f"백테스트    : {args.train_end} ~ {backtest_end}")
+    print(f"WF 스텝     : {args.wf_step_months}개월  /  폴드 수: {len(folds)}개")
     print(f"초기자본    : ${args.initial_capital:,.2f}")
     print(f"가중치      : Momentum {args.momentum_weight*100:.0f}% / AI {args.ai_weight*100:.0f}%")
     print(f"수수료/슬립 : {args.commission*100:.2f}% / {args.slippage*100:.2f}%")
@@ -212,7 +313,6 @@ def print_results_table(results, args, backtest_end):
 
     for r in results:
         m = r['metrics']
-        calmar = abs(m['cagr'] / m['mdd']) if m.get('mdd', 0) != 0 else 0
         print(
             f"{r['name']:<12} "
             f"{r['desc']:<32} "
@@ -227,7 +327,6 @@ def print_results_table(results, args, backtest_end):
 
     print("=" * 75)
 
-    # 최고 성과 실험 강조
     best_cagr = max(results, key=lambda r: r['metrics']['cagr'])
     best_sharpe = max(results, key=lambda r: r['metrics']['sharpe_ratio'])
     best_mdd = min(results, key=lambda r: r['metrics']['mdd'])
@@ -240,7 +339,7 @@ def print_results_table(results, args, backtest_end):
 
 
 # ============================================
-# [4] 결과 CSV 저장
+# [6] 결과 CSV 저장
 # ============================================
 
 def save_results_csv(results, csv_path):
@@ -270,29 +369,32 @@ def save_results_csv(results, csv_path):
 
 
 # ============================================
-# [5] 비교 차트 생성
+# [7] 비교 차트 생성
 # ============================================
 
-def plot_results(results, test_raw, output_path, args, backtest_end):
+def plot_results(results, spy_raw, output_path, args, backtest_end, folds):
     """
-    4-subplot 비교 차트 생성 및 저장.
+    4-subplot 비교 차트 생성 및 저장 (폴드 경계선 포함).
 
-    Subplot 1: 누적 수익률 곡선 (전략별 + SPY)
+    Subplot 1: 누적 수익률 곡선 (전략별 + SPY + 폴드 경계)
     Subplot 2: CAGR 막대 차트
     Subplot 3: 샤프 비율 막대 차트
     Subplot 4: MDD 막대 차트
     """
     fig, axes = plt.subplots(4, 1, figsize=(14, 20))
     title = (
-        f"Model Experiment: XGBoost Hyperparameter Comparison\n"
-        f"Train: {args.train_start}~{args.train_end}  "
-        f"| Backtest: {args.backtest_start}~{backtest_end}  "
+        f"Model Experiment: Walk-Forward (Step={args.wf_step_months}M, Folds={len(folds)})\n"
+        f"Train Init: {args.train_start}~{args.train_end}  "
+        f"| Backtest: {args.train_end}~{backtest_end}  "
         f"| Momentum {args.momentum_weight*100:.0f}% / AI {args.ai_weight*100:.0f}%"
     )
     fig.suptitle(title, fontsize=12, fontweight='bold')
 
     names = [r['name'] for r in results]
     colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
+
+    # 폴드 경계 날짜 (두 번째 폴드부터 test_start)
+    fold_boundaries = [pd.Timestamp(f['test_start']) for f in folds[1:]]
 
     # ----- Subplot 1: 누적 수익률 -----
     ax1 = axes[0]
@@ -305,15 +407,19 @@ def plot_results(results, test_raw, output_path, args, backtest_end):
                  label=r['name'], linewidth=1.5, color=colors[i], alpha=0.85)
 
     # SPY 기준선
-    if 'SPY' in test_raw['symbol'].unique():
-        spy = test_raw[test_raw['symbol'] == 'SPY'].sort_values('date').copy()
+    if 'SPY' in spy_raw['symbol'].unique():
+        spy = spy_raw[spy_raw['symbol'] == 'SPY'].sort_values('date').copy()
         spy['date'] = pd.to_datetime(spy['date'])
         spy['normalized'] = spy['close'] / spy['close'].iloc[0] * 100
         ax1.plot(spy['date'], spy['normalized'],
                  label='SPY', linewidth=2.5, linestyle='--',
                  color='black', alpha=0.6)
 
-    ax1.set_title('Cumulative Return (base=100)', fontsize=11)
+    # 폴드 경계 수직선
+    for boundary in fold_boundaries:
+        ax1.axvline(x=boundary, color='gray', linewidth=0.8, linestyle=':', alpha=0.7)
+
+    ax1.set_title(f'Cumulative Return (base=100) | 수직선: WF 폴드 경계 ({len(folds)}개)', fontsize=11)
     ax1.set_ylabel('Value (base=100)')
     ax1.legend(loc='upper left', fontsize=7, ncol=3)
     ax1.grid(True, alpha=0.3)
@@ -326,11 +432,9 @@ def plot_results(results, test_raw, output_path, args, backtest_end):
     bars = ax2.bar(names, cagrs, color=bar_colors, alpha=0.8)
     ax2.axhline(y=0, color='black', linewidth=0.8)
 
-    # SPY CAGR 기준선 표시
     if results:
         spy_cagr = results[0]['metrics'].get('spy_return', 0)
         if spy_cagr != 0:
-            # 간단히 총수익률에서 연환산 (정확하지 않으나 시각적 참고용)
             ax2.axhline(y=spy_cagr * 100, color='orange', linewidth=1.5,
                         linestyle='--', label=f'SPY Total Return {spy_cagr*100:.1f}%')
             ax2.legend(fontsize=8)
@@ -381,19 +485,21 @@ def plot_results(results, test_raw, output_path, args, backtest_end):
 
 
 # ============================================
-# [6] CLI 파싱
+# [8] CLI 파싱
 # ============================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='XGBoost 하이퍼파라미터 실험 비교')
+    parser = argparse.ArgumentParser(description='XGBoost 하이퍼파라미터 실험 비교 (Walk-Forward)')
     parser.add_argument('--train_start', type=str, default='2015-01-01',
                         help='AI 학습 시작일 (YYYY-MM-DD)')
     parser.add_argument('--train_end', type=str, default='2020-01-01',
-                        help='AI 학습 종료일 (YYYY-MM-DD)')
+                        help='초기 학습 종료일 = 첫 번째 테스트 시작일 (YYYY-MM-DD)')
     parser.add_argument('--backtest_start', type=str, default='2020-01-01',
-                        help='백테스트 시작일 (YYYY-MM-DD)')
+                        help='(미사용, train_end와 동일하게 처리됨. 하위 호환용)')
     parser.add_argument('--backtest_end', type=str, default='',
                         help='백테스트 종료일 (YYYY-MM-DD, 빈값=오늘)')
+    parser.add_argument('--wf_step_months', type=int, default=3,
+                        help='Walk-Forward 테스트 윈도우 크기 (개월, 기본 3)')
     parser.add_argument('--initial_capital', type=float, default=10000,
                         help='초기 자본금 (USD)')
     parser.add_argument('--momentum_weight', type=float, default=0.35,
@@ -412,7 +518,7 @@ def parse_args():
 
 
 # ============================================
-# [7] 메인
+# [9] 메인
 # ============================================
 
 def main():
@@ -426,16 +532,31 @@ def main():
         print(f"경고: momentum_weight({args.momentum_weight}) + "
               f"ai_weight({args.ai_weight}) = {total_weight:.2f} (합계가 1.0이 아님)")
 
+    # ----- Walk-Forward 폴드 생성 -----
+    folds = generate_walk_forward_folds(
+        args.train_start, args.train_end, backtest_end, args.wf_step_months
+    )
+
     print("=" * 60)
-    print("[Model Experiment 설정]")
-    print(f"학습기간   : {args.train_start} ~ {args.train_end}")
-    print(f"백테스트   : {args.backtest_start} ~ {backtest_end}")
-    print(f"가중치     : Momentum {args.momentum_weight*100:.0f}% / AI {args.ai_weight*100:.0f}%")
-    print(f"실험 수    : {len(get_experiments())}개")
+    print("[Model Experiment (Walk-Forward) 설정]")
+    print(f"학습 초기   : {args.train_start} ~ {args.train_end}")
+    print(f"백테스트    : {args.train_end} ~ {backtest_end}")
+    print(f"WF 스텝     : {args.wf_step_months}개월  /  폴드 수: {len(folds)}개")
+    print(f"가중치      : Momentum {args.momentum_weight*100:.0f}% / AI {args.ai_weight*100:.0f}%")
+    print(f"실험 수     : {len(get_experiments())}개")
     print("=" * 60)
 
+    if not folds:
+        print("생성된 폴드가 없습니다. train_end와 backtest_end를 확인하세요.")
+        return
+
+    for i, f in enumerate(folds):
+        print(f"  Fold {i+1:2d}: Train {f['train_start']}~{f['train_end']}  "
+              f"| Test {f['test_start']}~{f['test_end']}")
+    print()
+
     # ----- [1] 종목 목록 -----
-    print("\n[1] S&P 500 종목 목록 로딩...")
+    print("[1] S&P 500 종목 목록 로딩...")
     try:
         sp500 = get_sp500_list()
         symbols = sp500['symbol'].tolist() + ['SPY']
@@ -444,59 +565,135 @@ def main():
         symbols = SP500_BACKUP + ['SPY']
     print(f"종목 수: {len(symbols)}")
 
-    # ----- [2] 학습 데이터 다운로드 -----
-    print(f"\n[2] 학습 데이터 다운로드: {args.train_start} ~ {args.train_end}")
-    train_raw = get_backtest_data(symbols, start_date=args.train_start, end_date=args.train_end)
-    print(f"학습 데이터 rows: {len(train_raw):,}")
+    # ----- [2] 전체 기간 데이터 한 번에 다운로드 -----
+    print(f"\n[2] 전체 데이터 다운로드: {args.train_start} ~ {backtest_end}")
+    all_raw = get_backtest_data(symbols, start_date=args.train_start, end_date=backtest_end)
+    all_raw['date'] = pd.to_datetime(all_raw['date'])
+    print(f"전체 데이터 rows: {len(all_raw):,}")
 
-    # ----- [3] 백테스트 데이터 다운로드 -----
-    print(f"\n[3] 백테스트 데이터 다운로드: {args.backtest_start} ~ {backtest_end}")
-    test_raw = get_backtest_data(symbols, start_date=args.backtest_start, end_date=backtest_end)
-    print(f"백테스트 데이터 rows: {len(test_raw):,}")
+    # ----- [3] 전체 피처 한 번에 생성 -----
+    print("\n[3] 피처 생성 중...")
+    all_features = create_features(all_raw)
+    all_features['date'] = pd.to_datetime(all_features['date'])
+    feature_cols = get_feature_columns(all_features)
+    print(f"피처 수: {len(feature_cols)}  /  전체 샘플: {len(all_features):,}")
 
-    # ----- [4] 피처 생성 -----
-    print("\n[4] 피처 생성 중...")
-    train_features = create_features(train_raw)
-    test_features = create_features(test_raw)
-    feature_cols = get_feature_columns(train_features)
-    print(f"피처 수: {len(feature_cols)}")
-    print(f"학습 샘플: {len(train_features):,}  /  테스트 샘플: {len(test_features):,}")
-
-    # ----- [5] 모멘텀용 가격 데이터 -----
-    price_df = prepare_price_data(test_raw)
-
-    # ----- [6] 실험 실행 -----
+    # ----- [4] Walk-Forward 폴드별 실험 실행 -----
     experiments = get_experiments()
-    results = []
 
-    for i, exp in enumerate(experiments):
-        print(f"\n[5-{i}] 실험 '{exp['name']}' 실행 중... ({exp['desc']})")
-        try:
-            r = run_single_experiment(
-                exp, train_features, test_features, feature_cols,
-                price_df, test_raw, args
-            )
-            results.append(r)
-            m = r['metrics']
-            print(f"      → 수익률: {m['total_return']*100:+.1f}%  "
-                  f"CAGR: {m['cagr']*100:.1f}%  "
-                  f"Sharpe: {m['sharpe_ratio']:.2f}  "
-                  f"MDD: {m['mdd']*100:.1f}%")
-        except Exception as e:
-            print(f"      ✗ 실패: {e}")
+    # exp_name → {'desc': str, 'folds': [{'portfolio': df, 'trades': df}, ...]}
+    exp_fold_data = {
+        exp['name']: {'desc': exp['desc'], 'folds': []}
+        for exp in experiments
+    }
 
-    if not results:
-        print("실험 결과가 없습니다. 종료합니다.")
+    for fold_idx, fold in enumerate(folds):
+        fold_train_end = pd.Timestamp(fold['train_end'])
+        fold_test_end = pd.Timestamp(fold['test_end'])
+
+        print(f"\n{'='*60}")
+        print(f"[Fold {fold_idx+1}/{len(folds)}]  "
+              f"Train: {fold['train_start']}~{fold['train_end']}  "
+              f"| Test: {fold['test_start']}~{fold['test_end']}")
+        print(f"{'='*60}")
+
+        # 폴드별 데이터 슬라이싱
+        train_features_fold = all_features[all_features['date'] <= fold_train_end]
+        test_features_fold = all_features[
+            (all_features['date'] > fold_train_end) &
+            (all_features['date'] <= fold_test_end)
+        ]
+        test_raw_fold = all_raw[
+            (all_raw['date'] > fold_train_end) &
+            (all_raw['date'] <= fold_test_end)
+        ]
+
+        if len(test_features_fold) == 0:
+            print(f"  경고: 테스트 데이터 없음, Fold {fold_idx+1} 스킵")
+            continue
+
+        print(f"학습 샘플: {len(train_features_fold):,}  /  테스트 샘플: {len(test_features_fold):,}")
+
+        price_df_fold = prepare_price_data(test_raw_fold)
+
+        for exp in experiments:
+            print(f"\n  [{exp['name']}] {exp['desc']}")
+            try:
+                r = run_single_experiment(
+                    exp, train_features_fold, test_features_fold, feature_cols,
+                    price_df_fold, test_raw_fold, args
+                )
+                exp_fold_data[exp['name']]['folds'].append({
+                    'portfolio': r['portfolio'],
+                    'trades': r['trades'],
+                })
+                m = r['metrics']
+                print(f"    → 수익률: {m['total_return']*100:+.1f}%  "
+                      f"CAGR: {m['cagr']*100:.1f}%  "
+                      f"Sharpe: {m['sharpe_ratio']:.2f}  "
+                      f"MDD: {m['mdd']*100:.1f}%")
+            except Exception as e:
+                print(f"    ✗ 실패: {e}")
+
+    # ----- [5] 폴드 결과 집계 (포트폴리오 체이닝 + 전체 메트릭 계산) -----
+    print(f"\n\n[집계] Walk-Forward 결과 통합 중...")
+
+    # 전체 테스트 기간 SPY 데이터
+    spy_raw = all_raw[
+        (all_raw['symbol'] == 'SPY') &
+        (all_raw['date'] > pd.Timestamp(args.train_end))
+    ][['date', 'close']].rename(columns={'close': 'spy_close'})
+
+    aggregated_results = []
+
+    for exp in experiments:
+        data = exp_fold_data[exp['name']]
+        fold_list = data['folds']
+
+        if not fold_list:
+            print(f"  {exp['name']}: 유효 폴드 없음, 스킵")
+            continue
+
+        # 포트폴리오 체이닝
+        stitched_portfolio = stitch_portfolios(
+            [f['portfolio'] for f in fold_list],
+            args.initial_capital
+        )
+
+        # 거래 내역 합산
+        trade_dfs = [f['trades'] for f in fold_list if not f['trades'].empty]
+        all_trades = pd.concat(trade_dfs, ignore_index=True) if trade_dfs else pd.DataFrame()
+
+        # 전체 기간 메트릭 재계산
+        metrics = calculate_ai_metrics(
+            stitched_portfolio, all_trades, spy_raw,
+            args.initial_capital, args.slippage
+        )
+
+        aggregated_results.append({
+            'name': exp['name'],
+            'desc': data['desc'],
+            'metrics': metrics,
+            'portfolio': stitched_portfolio,
+        })
+
+        print(f"  {exp['name']}: 체이닝 완료  "
+              f"수익률={metrics['total_return']*100:+.1f}%  "
+              f"CAGR={metrics['cagr']*100:.1f}%  "
+              f"Sharpe={metrics['sharpe_ratio']:.2f}")
+
+    if not aggregated_results:
+        print("집계된 실험 결과가 없습니다. 종료합니다.")
         return
 
-    # ----- [7] 결과 출력 -----
-    print_results_table(results, args, backtest_end)
+    # ----- [6] 결과 출력 -----
+    print_results_table(aggregated_results, args, backtest_end, folds)
 
-    # ----- [8] CSV 저장 -----
-    save_results_csv(results, args.results_csv)
+    # ----- [7] CSV 저장 -----
+    save_results_csv(aggregated_results, args.results_csv)
 
-    # ----- [9] 차트 저장 -----
-    plot_results(results, test_raw, args.output, args, backtest_end)
+    # ----- [8] 차트 저장 -----
+    plot_results(aggregated_results, all_raw, args.output, args, backtest_end, folds)
 
 
 if __name__ == '__main__':
