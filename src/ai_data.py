@@ -15,10 +15,9 @@
 #   - MACD: macd, macd_signal, macd_hist  (12/26/9 EMA)
 #   - 볼린저 밴드: bb_pct  (%B: 현재가의 밴드 내 위치, 0~1)
 #   - 거래량: vol_ratio_5d, vol_ratio_20d  (현재 / 평균거래량)
-#   - SPY 상관관계: spy_corr  (60일 롤링)
 #
 # 라벨 정의:
-#   label = 1 if 5거래일 후 수익률 >= TARGET_RETURN(3%) else 0
+#   label = 1 if 5거래일 후 수익률 >= TARGET_RETURN(5%) else 0
 #   (미래 수익률을 shift로 과거로 당겨서 지도학습 라벨로 사용)
 #
 # 데이터 기간 설정 (자동 롤링):
@@ -62,7 +61,7 @@ TEST_START = (_today - timedelta(days=365)).strftime('%Y-%m-%d')     # 1년 전
 TEST_END = None  # None = 현재까지
 
 # 라벨 기준
-TARGET_RETURN = 0.03  # +3%
+TARGET_RETURN = 0.05  # +5%
 TARGET_DAYS = 5       # 5일 (1주일)
 
 # 피처 기간
@@ -380,11 +379,7 @@ def create_features(df):
     print("  - 거래량 피처 계산...")
     vol_features = calc_volume_features(volume_df)
     
-    # 8. SPY 상관관계
-    print("  - SPY 상관관계 계산...")
-    spy_corr = calc_spy_correlation(price_df)
-    
-    # 9. 라벨 생성
+    # 8. 라벨 생성
     print("  - 라벨 생성...")
     labels, future_ret = create_labels(price_df)
     
@@ -436,10 +431,6 @@ def create_features(df):
         for key, vf_df in vol_features.items():
             if symbol in vf_df.columns:
                 feature_df[key] = vf_df[symbol].values
-        
-        # SPY 상관관계 추가
-        if symbol in spy_corr.columns:
-            feature_df['spy_corr'] = spy_corr[symbol].values
         
         # 라벨 추가
         if symbol in labels.columns:

@@ -1,0 +1,116 @@
+# ============================================
+# 파일명: .github/workflows/model_experiment.yml
+# 설명: XGBoost 하이퍼파라미터 실험 비교 워크플로우 (Walk-Forward)
+#
+# 9가지 파라미터 조합을 Walk-Forward(Expanding Window) 방식으로 백테스트.
+# 학습 시작일은 고정, 학습 종료일은 스텝마다 확장, 테스트 윈도우는 wf_step_months개월.
+#
+# 실행: Actions → Model Experiment → Run workflow
+# 결과: 로그에서 비교 테이블 확인 + Artifacts에서 차트/CSV 다운로드
+# ============================================
+
+name: Model Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      train_start:
+        description: 'AI 학습 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2015-01-01'
+      train_end:
+        description: '초기 학습 종료일 = 첫 테스트 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2020-01-01'
+      backtest_end:
+        description: '백테스트 종료일 (YYYY-MM-DD, 빈값=오늘)'
+        required: false
+        default: ''
+      wf_step_months:
+        description: 'Walk-Forward 테스트 윈도우 크기 (개월, 기본 3)'
+        required: false
+        default: '3'
+      initial_capital:
+        description: '초기 자본금 (USD)'
+        required: false
+        default: '10000'
+      momentum_weight:
+        description: '모멘텀 가중치 (0.0~1.0)'
+        required: false
+        default: '0.35'
+      ai_weight:
+        description: 'AI 가중치 (0.0~1.0)'
+        required: false
+        default: '0.65'
+      commission:
+        description: '수수료율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+      slippage:
+        description: '슬리피지율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+      output:
+        description: '차트 파일명'
+        required: false
+        default: 'experiment_result.png'
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-experiment-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn matplotlib python-dotenv lxml
+
+      - name: Run Model Experiment (Walk-Forward)
+        working-directory: ./src
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python run_model_experiment.py \
+            --train_start "${{ github.event.inputs.train_start }}" \
+            --train_end "${{ github.event.inputs.train_end }}" \
+            --backtest_end "${{ github.event.inputs.backtest_end }}" \
+            --wf_step_months "${{ github.event.inputs.wf_step_months }}" \
+            --initial_capital "${{ github.event.inputs.initial_capital }}" \
+            --momentum_weight "${{ github.event.inputs.momentum_weight }}" \
+            --ai_weight "${{ github.event.inputs.ai_weight }}" \
+            --commission "${{ github.event.inputs.commission }}" \
+            --slippage "${{ github.event.inputs.slippage }}" \
+            --output "../${{ github.event.inputs.output }}" \
+            --results_csv "../experiment_results.csv"
+
+      - name: Upload experiment chart
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: experiment-result-chart
+          path: ${{ github.event.inputs.output }}
+          retention-days: 30
+
+      - name: Upload experiment CSV
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: experiment-result-csv
+          path: experiment_results.csv
+          retention-days: 30
