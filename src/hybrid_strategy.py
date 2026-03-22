@@ -76,8 +76,7 @@ class HybridStrategy:
                  weight_ai=WEIGHT_AI,
                  top_n=TOP_N,
                  allocations=ALLOCATIONS,
-                 min_probability=MIN_PROBABILITY,
-                 xgb_params=None):
+                 min_probability=MIN_PROBABILITY):
         """
         전략 초기화
 
@@ -87,14 +86,12 @@ class HybridStrategy:
             top_n: 선정할 종목 수
             allocations: 종목별 투자 비중
             min_probability: 최소 매수 확률
-            xgb_params: XGBoost 파라미터 딕셔너리 (None이면 기본값)
         """
         self.weight_m = weight_momentum
         self.weight_ai = weight_ai
         self.top_n = top_n
         self.allocations = allocations
         self.min_probability = min_probability
-        self.xgb_params = xgb_params
         
         # 전략 인스턴스
         self.ai_strategy = None
@@ -132,7 +129,7 @@ class HybridStrategy:
         
         # ----- AI 전략 준비 -----
         print("\n[1] AI 전략 (XGBoost) 학습...")
-        self.ai_strategy = AIStrategy(params=self.xgb_params)
+        self.ai_strategy = AIStrategy()
         self.ai_strategy.train(train_df, feature_cols)
         
         # ----- 모멘텀 전략 준비 -----
@@ -290,8 +287,7 @@ class HybridStrategy:
 
 def create_hybrid_strategy(train_df, price_df, feature_cols,
                            weight_momentum=WEIGHT_MOMENTUM,
-                           weight_ai=WEIGHT_AI,
-                           xgb_params=None):
+                           weight_ai=WEIGHT_AI):
     """
     하이브리드 전략 생성 및 준비
 
@@ -301,7 +297,6 @@ def create_hybrid_strategy(train_df, price_df, feature_cols,
         feature_cols: AI 피처 컬럼
         weight_momentum: 모멘텀 가중치
         weight_ai: AI 가중치
-        xgb_params: XGBoost 파라미터 딕셔너리 (None이면 기본값)
 
     Returns:
         HybridStrategy: 준비된 전략 인스턴스
@@ -313,7 +308,6 @@ def create_hybrid_strategy(train_df, price_df, feature_cols,
     strategy = HybridStrategy(
         weight_momentum=weight_momentum,
         weight_ai=weight_ai,
-        xgb_params=xgb_params,
     )
     strategy.prepare(train_df, price_df, feature_cols)
     
