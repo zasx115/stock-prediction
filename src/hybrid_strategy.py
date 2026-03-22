@@ -71,27 +71,30 @@ class HybridStrategy:
         picks = strategy.select_stocks(test_df, features, date)
     """
     
-    def __init__(self, 
+    def __init__(self,
                  weight_momentum=WEIGHT_MOMENTUM,
                  weight_ai=WEIGHT_AI,
-                 top_n=TOP_N, 
-                 allocations=ALLOCATIONS, 
-                 min_probability=MIN_PROBABILITY):
+                 top_n=TOP_N,
+                 allocations=ALLOCATIONS,
+                 min_probability=MIN_PROBABILITY,
+                 xgb_params=None):
         """
         전략 초기화
-        
+
         Args:
             weight_momentum: 모멘텀 가중치 (기본 35%)
             weight_ai: AI 가중치 (기본 65%)
             top_n: 선정할 종목 수
             allocations: 종목별 투자 비중
             min_probability: 최소 매수 확률
+            xgb_params: XGBoost 파라미터 딕셔너리 (None이면 기본값)
         """
         self.weight_m = weight_momentum
         self.weight_ai = weight_ai
         self.top_n = top_n
         self.allocations = allocations
         self.min_probability = min_probability
+        self.xgb_params = xgb_params
         
         # 전략 인스턴스
         self.ai_strategy = None
@@ -129,7 +132,7 @@ class HybridStrategy:
         
         # ----- AI 전략 준비 -----
         print("\n[1] AI 전략 (XGBoost) 학습...")
-        self.ai_strategy = AIStrategy()
+        self.ai_strategy = AIStrategy(params=self.xgb_params)
         self.ai_strategy.train(train_df, feature_cols)
         
         # ----- 모멘텀 전략 준비 -----
@@ -287,27 +290,30 @@ class HybridStrategy:
 
 def create_hybrid_strategy(train_df, price_df, feature_cols,
                            weight_momentum=WEIGHT_MOMENTUM,
-                           weight_ai=WEIGHT_AI):
+                           weight_ai=WEIGHT_AI,
+                           xgb_params=None):
     """
     하이브리드 전략 생성 및 준비
-    
+
     Args:
         train_df: AI 학습용 데이터
         price_df: 모멘텀 계산용 가격 데이터
         feature_cols: AI 피처 컬럼
         weight_momentum: 모멘텀 가중치
         weight_ai: AI 가중치
-    
+        xgb_params: XGBoost 파라미터 딕셔너리 (None이면 기본값)
+
     Returns:
         HybridStrategy: 준비된 전략 인스턴스
-    
+
     사용 예시:
         strategy = create_hybrid_strategy(train_df, price_df, features)
         picks = strategy.select_stocks(test_df, features, date)
     """
     strategy = HybridStrategy(
         weight_momentum=weight_momentum,
-        weight_ai=weight_ai
+        weight_ai=weight_ai,
+        xgb_params=xgb_params,
     )
     strategy.prepare(train_df, price_df, feature_cols)
     
