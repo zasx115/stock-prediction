@@ -631,7 +631,9 @@ def main():
 
         print(f"학습 샘플: {len(train_features_fold):,}  /  테스트 샘플: {len(test_features_fold):,}")
 
-        price_df_fold = prepare_price_data(test_raw_fold)
+        # 모멘텀 전략은 충분한 가격 히스토리가 필요하므로 전체 기간(train_start~test_end) 사용
+        price_raw_for_momentum = all_raw[all_raw['date'] <= fold_test_end]
+        price_df_fold = prepare_price_data(price_raw_for_momentum)
 
         for exp in experiments:
             print(f"\n  [{exp['name']}] {exp['desc']}")
