@@ -638,7 +638,13 @@ def main():
 
         print(f"학습 샘플: {len(train_features_fold):,}  /  테스트 샘플: {len(test_features_fold):,}")
 
-        price_df_fold = prepare_price_data(test_raw_fold)
+        # 모멘텀 점수 계산에 과거 7개월 데이터 필요 (pct_change(24) = 화요일 24주 ≈ 6개월)
+        momentum_lookback = fold_train_end - pd.DateOffset(months=7)
+        price_raw_fold = all_raw[
+            (all_raw['date'] >= momentum_lookback) &
+            (all_raw['date'] <= fold_test_end)
+        ]
+        price_df_fold = prepare_price_data(price_raw_fold)
 
         for exp in experiments:
             print(f"\n  [{exp['name']}] {exp['desc']}")
