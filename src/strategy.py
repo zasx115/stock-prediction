@@ -125,12 +125,11 @@ class CustomStrategy:
         spy_returns = returns['SPY']
 
         # 각 종목별 60일 롤링 상관관계 계산
-        correlation_df = pd.DataFrame(index=price_df.index)
-
-        for col in returns.columns:
-            if col == 'SPY':
-                continue  # SPY 자신은 제외
-            correlation_df[col] = returns[col].rolling(self.correlation_period).corr(spy_returns)
+        corr_series = {
+            col: returns[col].rolling(self.correlation_period).corr(spy_returns)
+            for col in returns.columns if col != 'SPY'
+        }
+        correlation_df = pd.concat(corr_series, axis=1)
 
         # 캐시에 저장 (select_stocks에서 재사용)
         self._correlation_df = correlation_df
