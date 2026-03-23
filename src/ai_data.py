@@ -314,7 +314,7 @@ def create_labels(price_df, target_return=TARGET_RETURN, target_days=TARGET_DAYS
 # [5] 피처 통합 생성
 # ============================================
 
-def create_features(df):
+def create_features(df, target_return=None, target_days=None):
     """
     모든 피처를 생성하고 종목-날짜 롱포맷으로 통합
 
@@ -327,11 +327,17 @@ def create_features(df):
 
     Args:
         df: 원본 데이터프레임 (date, symbol, open, high, low, close, volume)
+        target_return: 라벨 목표 수익률 (None이면 기본값 TARGET_RETURN 사용)
+        target_days: 라벨 목표 기간 (None이면 기본값 TARGET_DAYS 사용)
 
     Returns:
         DataFrame: 종목-날짜별 피처 (long format),
                    컬럼: date, symbol, close, [피처들...], label, future_ret
     """
+    if target_return is None:
+        target_return = TARGET_RETURN
+    if target_days is None:
+        target_days = TARGET_DAYS
     print("=" * 60)
     print("피처 생성 시작...")
     print("=" * 60)
@@ -380,8 +386,8 @@ def create_features(df):
     vol_features = calc_volume_features(volume_df)
     
     # 8. 라벨 생성
-    print("  - 라벨 생성...")
-    labels, future_ret = create_labels(price_df)
+    print(f"  - 라벨 생성 (target_return={target_return}, target_days={target_days})...")
+    labels, future_ret = create_labels(price_df, target_return=target_return, target_days=target_days)
     
     # ----- 데이터 통합 (long format) -----
     print("  - 데이터 통합...")
