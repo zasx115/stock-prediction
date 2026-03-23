@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # ============================================
 # 파일명: src/run_model_experiment.py
-# 설명: XGBoost 하이퍼파라미터 실험 비교 백테스트 (Walk-Forward Expanding Window)
+# 설명: XGBoost 하이퍼파라미터 실험 비교 백테스트 (Walk-Forward Sliding Window)
 #
 # 역할 요약:
 #   다양한 XGBoost 파라미터 조합으로 HybridStrategy를 학습하고
-#   Walk-Forward(Expanding Window) 방식으로 각 실험의 백테스트 성과를 비교.
+#   Walk-Forward(Sliding Window) 방식으로 각 실험의 백테스트 성과를 비교.
 #
-# Walk-Forward 방식 (Expanding Window, 스텝 3개월):
-#   Fold 1: Train [train_start ~ train_end]        → Test [train_end ~ +3M]
-#   Fold 2: Train [train_start ~ train_end+3M]     → Test [train_end+3M ~ +6M]
-#   Fold 3: Train [train_start ~ train_end+6M]     → Test [train_end+6M ~ +9M]
+# Walk-Forward 방식 (Sliding Window, 스텝 3개월):
+#   Fold 1: Train [train_start ~ train_end]            → Test [train_end ~ +3M]
+#   Fold 2: Train [train_start+3M ~ train_end+3M]      → Test [train_end+3M ~ +6M]
+#   Fold 3: Train [train_start+6M ~ train_end+6M]      → Test [train_end+6M ~ +9M]
 #   ... backtest_end 까지 반복
 #
 # 실험 목록 (9가지):
@@ -151,9 +151,10 @@ def get_experiments():
 
 def generate_walk_forward_folds(train_start, train_end, backtest_end, step_months=3):
     """
-    Expanding Window Walk-Forward 폴드 목록 생성.
+    Sliding Window Walk-Forward 폴드 목록 생성.
 
-    학습 시작일(train_start)은 고정, 학습 종료일은 스텝마다 확장.
+    학습 윈도우 크기(train_end - train_start)를 고정하고,
+    매 스텝마다 train_start와 train_end를 step_months씩 슬라이딩.
     테스트 윈도우는 항상 step_months개월.
 
     Args:
@@ -166,6 +167,7 @@ def generate_walk_forward_folds(train_start, train_end, backtest_end, step_month
         list of dict: [{'train_start', 'train_end', 'test_start', 'test_end'}, ...]
     """
     folds = []
+    current_train_start = pd.Timestamp(train_start)
     test_start = pd.Timestamp(train_end)
     end = pd.Timestamp(backtest_end)
 
@@ -175,12 +177,13 @@ def generate_walk_forward_folds(train_start, train_end, backtest_end, step_month
             test_end = end
 
         folds.append({
-            'train_start': train_start,
+            'train_start': current_train_start.strftime('%Y-%m-%d'),
             'train_end': test_start.strftime('%Y-%m-%d'),
             'test_start': test_start.strftime('%Y-%m-%d'),
             'test_end': test_end.strftime('%Y-%m-%d'),
         })
 
+        current_train_start += pd.DateOffset(months=step_months)
         test_start = test_end
 
     return folds
@@ -605,6 +608,7 @@ def main():
     }
 
     for fold_idx, fold in enumerate(folds):
+        fold_train_start = pd.Timestamp(fold['train_start'])
         fold_train_end = pd.Timestamp(fold['train_end'])
         fold_test_end = pd.Timestamp(fold['test_end'])
 
@@ -614,8 +618,11 @@ def main():
               f"| Test: {fold['test_start']}~{fold['test_end']}")
         print(f"{'='*60}")
 
-        # 폴드별 데이터 슬라이싱
-        train_features_fold = all_features[all_features['date'] <= fold_train_end]
+        # 폴드별 데이터 슬라이싱 (Sliding Window: train_start ~ train_end)
+        train_features_fold = all_features[
+            (all_features['date'] >= fold_train_start) &
+            (all_features['date'] <= fold_train_end)
+        ]
         test_features_fold = all_features[
             (all_features['date'] > fold_train_end) &
             (all_features['date'] <= fold_test_end)
