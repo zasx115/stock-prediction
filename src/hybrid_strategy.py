@@ -71,15 +71,15 @@ class HybridStrategy:
         picks = strategy.select_stocks(test_df, features, date)
     """
     
-    def __init__(self, 
+    def __init__(self,
                  weight_momentum=WEIGHT_MOMENTUM,
                  weight_ai=WEIGHT_AI,
-                 top_n=TOP_N, 
-                 allocations=ALLOCATIONS, 
+                 top_n=TOP_N,
+                 allocations=ALLOCATIONS,
                  min_probability=MIN_PROBABILITY):
         """
         전략 초기화
-        
+
         Args:
             weight_momentum: 모멘텀 가중치 (기본 35%)
             weight_ai: AI 가중치 (기본 65%)
@@ -290,24 +290,24 @@ def create_hybrid_strategy(train_df, price_df, feature_cols,
                            weight_ai=WEIGHT_AI):
     """
     하이브리드 전략 생성 및 준비
-    
+
     Args:
         train_df: AI 학습용 데이터
         price_df: 모멘텀 계산용 가격 데이터
         feature_cols: AI 피처 컬럼
         weight_momentum: 모멘텀 가중치
         weight_ai: AI 가중치
-    
+
     Returns:
         HybridStrategy: 준비된 전략 인스턴스
-    
+
     사용 예시:
         strategy = create_hybrid_strategy(train_df, price_df, features)
         picks = strategy.select_stocks(test_df, features, date)
     """
     strategy = HybridStrategy(
         weight_momentum=weight_momentum,
-        weight_ai=weight_ai
+        weight_ai=weight_ai,
     )
     strategy.prepare(train_df, price_df, feature_cols)
     

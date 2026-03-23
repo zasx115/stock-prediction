@@ -77,8 +77,8 @@ from data import get_backtest_data, get_sp500_list
 from ai_data import create_features, get_feature_columns
 from hybrid_strategy import HybridStrategy
 from ai_backtest import run_ai_backtest, calculate_ai_metrics
-from strategy import prepare_price_data
-from ai_strategy import XGB_PARAMS
+from strategy import prepare_price_data, CustomStrategy, filter_tuesday
+from ai_strategy import AIStrategy, XGB_PARAMS
 
 
 # ============================================
@@ -240,6 +240,9 @@ def run_single_experiment(exp, train_features, test_features, feature_cols,
     """
     하나의 실험(파라미터 조합)에 대해 HybridStrategy를 학습하고 백테스트를 실행.
 
+    hybrid_strategy.py는 수정하지 않고, AIStrategy를 직접 생성·주입하는 방식으로
+    실험별 XGBoost 파라미터를 적용.
+
     Args:
         exp (dict): {'name', 'desc', 'params'}
         train_features (pd.DataFrame): 학습용 피처 DataFrame
@@ -252,12 +255,26 @@ def run_single_experiment(exp, train_features, test_features, feature_cols,
     Returns:
         dict: 실험 이름, 설명, 메트릭, portfolio_df, trades_df
     """
+    # [1] 실험별 파라미터로 AIStrategy 직접 생성 및 학습
+    ai = AIStrategy(params=exp['params'])
+    ai.train(train_features, feature_cols)
+
+    # [2] HybridStrategy 초기화 (hybrid_strategy.py 수정 없이)
     strategy = HybridStrategy(
         weight_momentum=args.momentum_weight,
         weight_ai=args.ai_weight,
-        xgb_params=exp['params'],
     )
-    strategy.prepare(train_features, price_df, feature_cols)
+    strategy.feature_cols = feature_cols
+
+    # [3] 학습된 AIStrategy 주입
+    strategy.ai_strategy = ai
+
+    # [4] 모멘텀 전략 준비 (prepare()의 모멘텀 부분만 수행)
+    strategy.momentum_strategy = CustomStrategy()
+    tuesday_df = filter_tuesday(price_df)
+    strategy.score_df, strategy.correlation_df, strategy.ret_1m = \
+        strategy.momentum_strategy.prepare(price_df, tuesday_df)
+    strategy.is_prepared = True
 
     result = run_ai_backtest(
         strategy=strategy,
