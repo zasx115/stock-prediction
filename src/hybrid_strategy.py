@@ -233,10 +233,20 @@ class HybridStrategy:
             } 또는 None
         """
         pred_df = self.predict(df, feature_cols, date)
-        
+
         if pred_df.empty:
             return None
-        
+
+        # ----- SPY 상관관계 필터: 시장과 유사하게 움직이는 종목만 포함 -----
+        date_ts = pd.Timestamp(date)
+        high_corr = self.momentum_strategy.get_high_correlation_stocks(
+            date_ts, self.correlation_df
+        )
+        if high_corr:
+            pred_df = pred_df[pred_df['symbol'].isin(high_corr)]
+            if pred_df.empty:
+                return None
+
         # Top N 선정
         top_picks = pred_df.head(self.top_n)
         
