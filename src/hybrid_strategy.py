@@ -48,8 +48,8 @@ from ai_strategy import AIStrategy, XGB_PARAMS
 # ============================================
 
 # 가중치 (최적값)
-WEIGHT_MOMENTUM = 0.35    # 모멘텀 35%
-WEIGHT_AI = 0.65          # AI 65%
+WEIGHT_MOMENTUM = 0.50    # 모멘텀 50% (실험 최적값)
+WEIGHT_AI = 0.50          # AI 50% (실험 최적값)
 
 # 종목 선정
 TOP_N = 3
