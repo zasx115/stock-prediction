@@ -81,12 +81,12 @@ except ImportError:
 XGB_PARAMS = {
     'objective': 'binary:logistic',  # 이진 분류
     'eval_metric': 'logloss',
-    'max_depth': 4,                  # 트리 깊이 (단순화)
+    'max_depth': 3,                  # 트리 깊이 (얕은 트리 → 과적합 방지)
     'learning_rate': 0.03,           # 학습률
     'n_estimators': 1000,            # ⭐ 트리 개수 (최적값!)
     'min_child_weight': 5,           # 과적합 방지
-    'subsample': 0.7,                # 데이터 샘플링
-    'colsample_bytree': 0.7,         # 피처 샘플링
+    'subsample': 0.5,                # 데이터 샘플링 (강한 배깅)
+    'colsample_bytree': 0.5,         # 피처 샘플링 (강한 배깅)
     'scale_pos_weight': 3,           # 클래스 가중치
     'random_state': 42,
     'n_jobs': -1,                    # 병렬 처리

@@ -61,7 +61,7 @@ TEST_START = (_today - timedelta(days=365)).strftime('%Y-%m-%d')     # 1년 전
 TEST_END = None  # None = 현재까지
 
 # 라벨 기준
-TARGET_RETURN = 0.05  # +5%
+TARGET_RETURN = 0.03  # +3% (실험 최적값)
 TARGET_DAYS = 5       # 5일 (1주일)
 
 # 피처 기간

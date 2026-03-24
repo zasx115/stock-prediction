@@ -80,10 +80,10 @@ def parse_args():
                         help='백테스트 종료일 (YYYY-MM-DD, 빈값=오늘)')
     parser.add_argument('--initial_capital', type=float, default=10000,
                         help='초기 자본금 (USD)')
-    parser.add_argument('--momentum_weight', type=float, default=0.35,
-                        help='모멘텀 가중치 (기본 0.35)')
-    parser.add_argument('--ai_weight', type=float, default=0.65,
-                        help='AI 가중치 (기본 0.65)')
+    parser.add_argument('--momentum_weight', type=float, default=0.50,
+                        help='모멘텀 가중치 (기본 0.50)')
+    parser.add_argument('--ai_weight', type=float, default=0.50,
+                        help='AI 가중치 (기본 0.50)')
     parser.add_argument('--commission', type=float, default=0.001,
                         help='수수료율 (기본 0.001 = 0.1%%)')
     parser.add_argument('--slippage', type=float, default=0.001,
