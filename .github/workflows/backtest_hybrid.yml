@@ -41,11 +41,11 @@ on:
       momentum_weight:
         description: '모멘텀 가중치 (0.0~1.0, momentum+ai=1.0)'
         required: false
-        default: '0.35'
+        default: '0.50'
       ai_weight:
         description: 'AI 가중치 (0.0~1.0, momentum+ai=1.0)'
         required: false
-        default: '0.65'
+        default: '0.50'
       commission:
         description: '수수료율 (예: 0.001 = 0.1%)'
         required: false
