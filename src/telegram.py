@@ -346,9 +346,12 @@ Capital: {capital_str}
     return send_message(text)
 
 
-def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=None):
+def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=None, label="Hybrid"):
     """
     Hybrid 매매 신호 메시지 (모멘텀 포맷 기반)
+
+    Args:
+        label: 전략 이름 ("Hybrid" 또는 "Hybrid_New")
     """
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -361,7 +364,7 @@ def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=No
 
     if signal.get("market_filter", False):
         weights_line = f"가중치: M{weight_momentum*100:.0f}% + AI{weight_ai*100:.0f}%\n" if weight_momentum is not None and weight_ai is not None else ""
-        text = f"""<b>📊 Hybrid 리밸런싱 ({today})</b>
+        text = f"""<b>📊 {label} 리밸런싱 ({today})</b>
 {weights_line}HOLD 신호 - 매매 없음"""
     else:
         picks_text = ""
@@ -371,7 +374,7 @@ def send_hybrid_signal(signal, total_capital, weight_momentum=None, weight_ai=No
             shares = int(total_capital * alloc / price) if price > 0 else 0
             picks_text += f"{i+1}. {symbol} ({score:.4f}) ({alloc*100:.0f}%) - ${price:.2f} ({shares}주)\n"
 
-        text = f"""<b>Hybrid BUY Signal ({today})</b>
+        text = f"""<b>{label} BUY Signal ({today})</b>
 Capital: ${total_capital:,.2f}
 Market: UP (Momentum: {market_momentum:.4f})
 SPY: ${spy_price:.2f}{weights_str}
@@ -382,7 +385,7 @@ SPY: ${spy_price:.2f}{weights_str}
     return send_message(text)
 
 
-def send_hybrid_portfolio(portfolio_value):
+def send_hybrid_portfolio(portfolio_value, label="Hybrid"):
     """
     Hybrid 포트폴리오 상태 메시지
     """
@@ -402,7 +405,7 @@ def send_hybrid_portfolio(portfolio_value):
     if not holdings_text:
         holdings_text = "- 보유 종목 없음\n"
 
-    text = f"""<b>Hybrid Portfolio Status ({today})</b>
+    text = f"""<b>{label} Portfolio Status ({today})</b>
 Total: ${total:,.2f}
 Cash: ${cash:,.2f}
 Stocks: ${stocks:,.2f}
@@ -413,7 +416,7 @@ Stocks: ${stocks:,.2f}
     return send_message(text)
 
 
-def send_hybrid_rebalancing(rebalancing, total_capital, signal=None, weight_momentum=None, weight_ai=None):
+def send_hybrid_rebalancing(rebalancing, total_capital, signal=None, weight_momentum=None, weight_ai=None, label="Hybrid"):
     """
     Hybrid 리밸런싱 메시지
     """
@@ -426,7 +429,7 @@ def send_hybrid_rebalancing(rebalancing, total_capital, signal=None, weight_mome
     actions = rebalancing.get("actions", [])
 
     if not actions:
-        text = f"""<b>📊 Hybrid 리밸런싱 ({today})</b>
+        text = f"""<b>📊 {label} 리밸런싱 ({today})</b>
 Capital: ${total_capital:,.0f}{weights_str}
 {rebalancing.get("message", "매매 없음")}"""
         return send_message(text)
@@ -447,7 +450,7 @@ Capital: ${total_capital:,.0f}{weights_str}
 
     capital_str = f"${total_capital:,.0f}"
 
-    text = f"<b>📊 Hybrid 리밸런싱 ({today})</b>\n"
+    text = f"<b>📊 {label} 리밸런싱 ({today})</b>\n"
     text += f"Capital: {capital_str}{weights_str}\n"
 
     if picks_text:

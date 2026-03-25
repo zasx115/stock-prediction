@@ -56,7 +56,8 @@ from config import (
 from data import get_sp500_list, download_stock_data, get_backtest_data
 from strategy import CustomStrategy, prepare_price_data, filter_tuesday
 from ai_data import create_features, get_feature_columns
-from ai_strategy import AIStrategy, XGB_PARAMS
+from ai_strategy import AIStrategy, XGB_PARAMS, XGB_PARAMS_OPTIMIZED
+from ai_data import TARGET_RETURN_OPTIMIZED
 
 # Google Sheets (선택적)
 try:
@@ -84,14 +85,21 @@ from telegram import (
 # Hybrid 전용 Google Sheets 이름
 HYBRID_SPREADSHEET = "Hybrid_Paper_Trading"
 
+# Hybrid_New 전용 Google Sheets 이름
+HYBRID_NEW_SPREADSHEET = "HybridNew_Paper_Trading"
+
 # 시트 이름
 HYBRID_HOLDINGS_SHEET = "Holdings"
 HYBRID_TRADES_SHEET = "Trades"
 HYBRID_SIGNALS_SHEET = "Signals"
 
-# 가중치
+# 기존 Hybrid 가중치
 WEIGHT_MOMENTUM = 0.35
 WEIGHT_AI = 0.65
+
+# Hybrid_New 가중치 (실험 최적값: Balanced 50/50)
+WEIGHT_MOMENTUM_NEW = 0.50
+WEIGHT_AI_NEW = 0.50
 
 # AI 학습 기간 (자동 롤링) - 매 실행마다 현재 날짜 기준으로 재계산
 # - 학습: 5년 전 ~ 1년 전 (out-of-sample 방식: 가장 최근 1년은 테스트/라이브용)
@@ -117,13 +125,17 @@ class HybridSheetsManager:
     
     def _connect(self):
         """Sheets 연결"""
+        self._connect_to(HYBRID_SPREADSHEET)
+
+    def _connect_to(self, spreadsheet_name):
+        """지정된 스프레드시트에 연결"""
         if not SHEETS_AVAILABLE:
             print("⚠️ Sheets 모듈 없음")
             return
-        
+
         try:
-            self.sheets = SheetsManager(spreadsheet_name=HYBRID_SPREADSHEET)
-            print(f"✅ Hybrid Sheets 연결: {HYBRID_SPREADSHEET}")
+            self.sheets = SheetsManager(spreadsheet_name=spreadsheet_name)
+            print(f"✅ Sheets 연결: {spreadsheet_name}")
         except Exception as e:
             print(f"⚠️ Sheets 연결 실패: {e}")
             self.sheets = None
@@ -1447,17 +1459,327 @@ def run_hybrid_daily():
 
 
 # ============================================
-# [10] 테스트
+# [10] Hybrid_New 전략 (최적 파라미터)
+# ============================================
+#
+# 기존 Hybrid와의 차이:
+#   - XGBoost: Depth-3, Sampling50 (max_depth=3, subsample=0.5, colsample=0.5)
+#   - 라벨: 5D-3% (TARGET_RETURN=0.03)
+#   - 가중치: 50/50 Balanced
+#   - 나머지(모멘텀, 필터링, 손절 등)는 동일
+# ============================================
+
+def prepare_hybrid_new_data():
+    """
+    Hybrid_New 전략용 데이터 준비 (3% 라벨 사용)
+    """
+    print("=" * 60)
+    print("Hybrid_New 데이터 준비 (5D-3% 라벨)")
+    print("=" * 60)
+
+    sp500 = get_sp500_list()
+    symbols = sp500['symbol'].tolist() + ['SPY']
+
+    print("\n[1] 학습 데이터 다운로드...")
+    train_raw = get_backtest_data(symbols, start_date=TRAIN_START, end_date=TRAIN_END)
+
+    print("\n[2] 현재 데이터 다운로드...")
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+    current_raw = get_backtest_data(symbols, start_date=start_date, end_date=end_date)
+
+    print("\n[3] 피처 생성 (3% 라벨)...")
+    train_df = create_features(train_raw, target_return=TARGET_RETURN_OPTIMIZED)
+    current_df = create_features(current_raw, target_return=TARGET_RETURN_OPTIMIZED)
+
+    features = get_feature_columns(train_df)
+
+    price_df = current_raw.pivot(index='date', columns='symbol', values='close')
+
+    print(f"\n✅ 데이터 준비 완료!")
+    print(f"  학습 데이터: {len(train_df):,}개")
+    print(f"  현재 데이터: {len(current_df):,}개")
+    print(f"  피처 수: {len(features)}개")
+
+    return train_df, current_df, price_df, features
+
+
+def get_hybrid_new_signal():
+    """
+    Hybrid_New 신호 생성 (최적 파라미터: Depth-3, Sampling50, 5D-3%, 50/50)
+    """
+    print("=" * 60)
+    print("Hybrid_New 신호 생성 (Depth-3, Sampling50, 5D-3%, 50/50)")
+    print("=" * 60)
+
+    train_df, current_df, price_df, features = prepare_hybrid_new_data()
+
+    # 최적 파라미터로 전략 준비
+    strategy = HybridTradingStrategy(
+        weight_momentum=WEIGHT_MOMENTUM_NEW,
+        weight_ai=WEIGHT_AI_NEW,
+        use_market_filter=True
+    )
+
+    # AI를 최적 파라미터로 직접 생성·주입
+    strategy.feature_cols = features
+    strategy.ai_strategy = AIStrategy(params=XGB_PARAMS_OPTIMIZED)
+    strategy.ai_strategy.train(train_df, features)
+
+    # 모멘텀 준비
+    strategy.momentum_strategy = CustomStrategy()
+    tuesday_df = filter_tuesday(price_df)
+    strategy.score_df, strategy.correlation_df, strategy.ret_1m = \
+        strategy.momentum_strategy.prepare(price_df, tuesday_df)
+    strategy.is_prepared = True
+
+    print(f"\n✅ Hybrid_New 전략 준비 완료!")
+    print(f"   XGBoost: max_depth=3, subsample=0.5, colsample=0.5")
+    print(f"   라벨: 5D-3%")
+    print(f"   가중치: M{WEIGHT_MOMENTUM_NEW*100:.0f}% + AI{WEIGHT_AI_NEW*100:.0f}%")
+
+    # 가장 최근 거래일 찾기
+    available_dates = sorted(current_df['date'].unique())
+    if not available_dates:
+        print("❌ 데이터 없음")
+        return None
+
+    latest_date = available_dates[-1]
+    print(f"\n기준일: {latest_date}")
+
+    result = strategy.select_stocks(current_df, price_df, latest_date)
+
+    if result is None:
+        print("❌ 선정된 종목 없음")
+        return None
+
+    if result.get('market_filter', False):
+        print(f"\n⚠️ 시장 필터링 발동!")
+        print(f"   평균 1개월 수익률: {result.get('market_momentum', 0):.4f} <= 0")
+        return result
+
+    print(f"\n✅ 선정 종목:")
+    for i, (symbol, score) in enumerate(zip(result['picks'], result['scores'])):
+        price = result['prices'].get(symbol, 0)
+        alloc = result['allocations'][i]
+        print(f"  {i+1}. {symbol}: 점수 {score:.4f}, 가격 ${price:.2f}, 비중 {alloc*100:.0f}%")
+
+    return result
+
+
+def run_hybrid_new_weekly():
+    """
+    Hybrid_New 주간 실행
+    - 최적 파라미터(Depth-3, Sampling50, 5D-3%, 50/50)로 신호 생성
+    - Telegram 알림 발송
+    - Google Sheets 기록
+    """
+    print("=" * 60)
+    print("🆕 Hybrid_New 주간 실행")
+    print("=" * 60)
+    print(f"가중치: 모멘텀 {WEIGHT_MOMENTUM_NEW*100:.0f}% + AI {WEIGHT_AI_NEW*100:.0f}%")
+    print(f"모델: Depth-3, Sampling50 | 라벨: 5D-3%")
+
+    # 1. Sheets 연결 (Hybrid_New 전용)
+    sheets = HybridSheetsManager()
+    sheets._connect_to(HYBRID_NEW_SPREADSHEET)
+
+    # 2. Holdings 동기화
+    sync_result = sheets.sync_holdings()
+
+    # 3. 신호 생성 (최적 파라미터)
+    signal = get_hybrid_new_signal()
+
+    if signal is None:
+        print("❌ 신호 생성 실패")
+        return
+
+    # 4. 시장 필터링 체크
+    if signal.get('market_filter', False):
+        print("\n⚠️ 시장 필터링 발동 - HOLD")
+        send_hybrid_signal(signal, INITIAL_CAPITAL,
+                           WEIGHT_MOMENTUM_NEW, WEIGHT_AI_NEW,
+                           label="Hybrid_New")
+        sheets.save_signal(signal)
+
+        portfolio = sheets.get_holdings()
+        cash = sync_result.get("cash", INITIAL_CAPITAL)
+        stocks_value = 0.0
+        holdings_detail = []
+        if portfolio:
+            import yfinance as yf
+            symbols = list(portfolio.keys()) + ['SPY']
+            current_prices = {}
+            for sym in symbols:
+                try:
+                    ticker = yf.Ticker(sym)
+                    hist = ticker.history(period='1d')
+                    if not hist.empty:
+                        current_prices[sym] = hist['Close'].iloc[-1]
+                except:
+                    pass
+            spy_price = current_prices.get('SPY', 0)
+            sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
+            for sym, data in portfolio.items():
+                shares = data.get('shares', 0)
+                avg_price = data.get('avg_price', 0)
+                cur_price = current_prices.get(sym, avg_price)
+                stocks_value += shares * cur_price
+                pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+                holdings_detail.append({
+                    "symbol": sym, "shares": shares, "profit_loss_pct": pnl_pct
+                })
+
+        send_hybrid_portfolio({
+            "total": cash + stocks_value, "cash": cash,
+            "stocks": stocks_value, "holdings_detail": holdings_detail
+        }, label="Hybrid_New")
+        sheets.update_performance()
+        print("\n✅ Hybrid_New 주간 실행 완료 (HOLD)")
+        return {'signal': signal, 'market_filter': True}
+
+    # 5. 현재 포트폴리오
+    portfolio = sheets.get_holdings()
+    for symbol in portfolio:
+        if symbol in signal['prices']:
+            portfolio[symbol]['current_price'] = signal['prices'][symbol]
+        else:
+            portfolio[symbol]['current_price'] = portfolio[symbol]['avg_price']
+
+    # 6. 동적 자본금 계산
+    available_cash = sync_result.get("cash", INITIAL_CAPITAL)
+    stocks_value = sum(
+        info.get('shares', 0) * info.get('current_price', info.get('avg_price', 0))
+        for info in portfolio.values()
+    ) if portfolio else 0
+    total_capital = available_cash + stocks_value
+
+    # 7. 리밸런싱 계산
+    rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital, available_cash)
+    print_hybrid_rebalancing(rebalancing)
+
+    # 8. Telegram 전송
+    send_hybrid_rebalancing(rebalancing, total_capital, signal,
+                            WEIGHT_MOMENTUM_NEW, WEIGHT_AI_NEW,
+                            label="Hybrid_New")
+
+    # 9. Sheets 기록
+    sheets.save_signal(signal)
+    sync_result = sheets.sync_holdings()
+    cash = sync_result.get("cash", INITIAL_CAPITAL)
+    spy_price = signal['prices'].get('SPY', 0)
+    new_holdings = sheets.get_holdings()
+    sheets.save_daily_value(new_holdings, signal['prices'], cash, spy_price)
+    sheets.update_performance()
+
+    print("\n✅ Hybrid_New 주간 실행 완료!")
+    return {'signal': signal, 'rebalancing': rebalancing}
+
+
+def run_hybrid_new_daily():
+    """
+    Hybrid_New Daily 실행
+    - 손절 체크, 일일 가치 기록, 성과 업데이트
+    - Hybrid_New 참고 신호 Telegram 발송
+    """
+    print("=" * 60)
+    print("🆕 Hybrid_New Daily 실행")
+    print("=" * 60)
+
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # 1. Sheets 연결
+    sheets = HybridSheetsManager()
+    sheets._connect_to(HYBRID_NEW_SPREADSHEET)
+
+    # 2. Holdings 동기화
+    sync_result = sheets.sync_holdings()
+
+    # 3. 현재 보유 종목
+    holdings = sheets.get_holdings()
+
+    # 4. 현재 가격
+    symbols = list(holdings.keys()) + ['SPY'] if holdings else ['SPY']
+    current_prices = get_current_prices(symbols)
+    spy_price = current_prices.get('SPY', 0)
+
+    # 5. 손절 체크
+    if holdings:
+        stop_loss_list = check_stop_loss(holdings, current_prices)
+        if stop_loss_list:
+            for item in stop_loss_list:
+                item['profit_loss'] = item['shares'] * (item['current_price'] - item['avg_price'])
+            send_stop_loss(stop_loss_list)
+
+    # 6. 포트폴리오 가치
+    cash = sync_result.get("cash", INITIAL_CAPITAL)
+    stocks_value = sum(
+        holdings.get(s, {}).get('shares', 0) * current_prices.get(s, 0)
+        for s in holdings
+    ) if holdings else 0
+    total_value = stocks_value + cash
+
+    # 7. Daily_Value 저장
+    sheets.save_daily_value(holdings, current_prices, cash, spy_price)
+    sheets.update_performance()
+
+    # 8. Daily Summary 전송
+    daily_df = sheets.sheets.load_daily_values()
+    daily_return = 0
+    spy_return = 0
+    alpha = 0
+    if len(daily_df) > 1:
+        try:
+            daily_return = float(daily_df.iloc[-1]["Daily_Return%"])
+            spy_return = float(daily_df.iloc[-1]["SPY_Return%"])
+            alpha = float(daily_df.iloc[-1]["Alpha"])
+        except:
+            pass
+
+    holdings_detail = []
+    for symbol, info in holdings.items():
+        avg_price = info.get('avg_price', 0)
+        current_price = current_prices.get(symbol, avg_price)
+        return_pct = (current_price - avg_price) / avg_price * 100 if avg_price > 0 else 0
+        holdings_detail.append({
+            'symbol': symbol, 'shares': info.get('shares', 0),
+            'profit_loss_pct': return_pct
+        })
+
+    daily_data = {
+        'date': today, 'daily_return_pct': daily_return,
+        'spy_return_pct': spy_return, 'alpha': alpha
+    }
+    portfolio_value = {
+        'total': total_value, 'cash': cash,
+        'stocks': stocks_value, 'holdings_detail': holdings_detail
+    }
+
+    ref_signal = get_hybrid_new_signal()
+    if ref_signal:
+        is_hold = ref_signal.get('market_filter', False) or not ref_signal.get('picks')
+        ref_signal['signal'] = "HOLD" if is_hold else "BUY"
+        ref_signal['market_trend'] = "DOWN" if is_hold else "UP"
+        if 'date' not in ref_signal:
+            ref_signal['date'] = today
+        sheets.save_signal(ref_signal)
+    send_daily_summary(daily_data, portfolio_value, signal=ref_signal, strategy="Hybrid_New")
+
+    print("\n✅ Hybrid_New Daily 실행 완료!")
+
+
+# ============================================
+# [11] 테스트
 # ============================================
 
 if __name__ == "__main__":
     print("Hybrid Trading 모듈 테스트")
     print("=" * 60)
-    
+
     # 간단 테스트: 신호만 생성
     try:
         signal = get_hybrid_signal()
-        
+
         if signal:
             print("\n✅ 신호 생성 성공!")
             send_hybrid_signal(signal, INITIAL_CAPITAL, WEIGHT_MOMENTUM, WEIGHT_AI)

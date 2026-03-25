@@ -17,7 +17,7 @@
 #   - 거래량: vol_ratio_5d, vol_ratio_20d  (현재 / 평균거래량)
 #
 # 라벨 정의:
-#   label = 1 if 5거래일 후 수익률 >= TARGET_RETURN(5%) else 0
+#   label = 1 if 5거래일 후 수익률 >= TARGET_RETURN else 0
 #   (미래 수익률을 shift로 과거로 당겨서 지도학습 라벨로 사용)
 #
 # 데이터 기간 설정 (자동 롤링):
@@ -61,8 +61,11 @@ TEST_START = (_today - timedelta(days=365)).strftime('%Y-%m-%d')     # 1년 전
 TEST_END = None  # None = 현재까지
 
 # 라벨 기준
-TARGET_RETURN = 0.03  # +3% (실험 최적값)
+TARGET_RETURN = 0.05  # +5% (기본값)
 TARGET_DAYS = 5       # 5일 (1주일)
+
+# Hybrid_New 전용 라벨 기준 (실험 최적값: 5D-3%)
+TARGET_RETURN_OPTIMIZED = 0.03  # +3%
 
 # 피처 기간
 FEATURE_WINDOWS = [5, 10, 20, 60, 120]  # 이동평균 등

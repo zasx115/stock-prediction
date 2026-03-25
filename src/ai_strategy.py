@@ -77,19 +77,34 @@ except ImportError:
 # [1] 설정
 # ============================================
 
-# 모델 파라미터 (최적화된 값 - n_estimators=1000)
+# 모델 파라미터 (기본값 - n_estimators=1000)
 XGB_PARAMS = {
     'objective': 'binary:logistic',  # 이진 분류
     'eval_metric': 'logloss',
-    'max_depth': 3,                  # 트리 깊이 (얕은 트리 → 과적합 방지)
+    'max_depth': 4,                  # 트리 깊이 (얕은 트리 → 과적합 방지)
     'learning_rate': 0.03,           # 학습률
     'n_estimators': 1000,            # ⭐ 트리 개수 (최적값!)
     'min_child_weight': 5,           # 과적합 방지
-    'subsample': 0.5,                # 데이터 샘플링 (강한 배깅)
-    'colsample_bytree': 0.5,         # 피처 샘플링 (강한 배깅)
+    'subsample': 0.7,                # 데이터 샘플링
+    'colsample_bytree': 0.7,         # 피처 샘플링
     'scale_pos_weight': 3,           # 클래스 가중치
     'random_state': 42,
     'n_jobs': -1,                    # 병렬 처리
+}
+
+# Hybrid_New 전용 최적 파라미터 (Depth-3 + Sampling50 실험 결과)
+XGB_PARAMS_OPTIMIZED = {
+    'objective': 'binary:logistic',
+    'eval_metric': 'logloss',
+    'max_depth': 3,                  # 얕은 트리 → 과적합 억제
+    'learning_rate': 0.03,
+    'n_estimators': 1000,
+    'min_child_weight': 5,
+    'subsample': 0.5,                # 강한 배깅 (Sampling50)
+    'colsample_bytree': 0.5,         # 강한 배깅 (Sampling50)
+    'scale_pos_weight': 3,
+    'random_state': 42,
+    'n_jobs': -1,
 }
 
 # LightGBM 파라미터 (최적화된 값 - num_leaves=10)
