@@ -1,0 +1,99 @@
+# ============================================
+# 파일명: .github/workflows/backtest_hybrid_new.yml
+# 설명: 하이브리드_New 전략 백테스트 워크플로우 (Walk-Forward Sliding Window)
+#
+# Hybrid_New 최적 파라미터:
+#   - XGBoost: max_depth=3, subsample=0.5, colsample_bytree=0.5
+#   - 라벨: 5D-3% (TARGET_RETURN_OPTIMIZED=0.03)
+#   - 가중치: 모멘텀 50% + AI 50%
+#
+# Walk-Forward 방식:
+#   Fold 1: Train [train_start ~ train_end]        → Test [train_end ~ +6M]
+#   Fold 2: Train [+6M sliding]                    → Test [+6M ~ +12M]
+#   ... backtest_end 까지 반복 (6개월마다 재학습)
+#
+# 실행: Actions → Hybrid_New Backtest → Run workflow
+# 결과: 로그에서 메트릭 확인 + Artifacts에서 그래프 다운로드
+# ============================================
+
+name: Hybrid_New Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      train_start:
+        description: 'AI 학습 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2015-01-01'
+      train_end:
+        description: 'AI 학습 종료일 = 첫 테스트 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2020-01-01'
+      backtest_end:
+        description: '백테스트 종료일 (YYYY-MM-DD, 빈값=오늘)'
+        required: false
+        default: ''
+      wf_step_months:
+        description: 'Walk-Forward 스텝 (개월, 기본 6)'
+        required: false
+        default: '6'
+      initial_capital:
+        description: '초기 자본금 (USD)'
+        required: false
+        default: '10000'
+      momentum_weight:
+        description: '모멘텀 가중치 (0.0~1.0, momentum+ai=1.0)'
+        required: false
+        default: '0.50'
+      ai_weight:
+        description: 'AI 가중치 (0.0~1.0, momentum+ai=1.0)'
+        required: false
+        default: '0.50'
+      commission:
+        description: '수수료율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+      slippage:
+        description: '슬리피지율 (예: 0.001 = 0.1%)'
+        required: false
+        default: '0.001'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn matplotlib python-dotenv lxml
+
+      - name: Run Hybrid_New Backtest (Walk-Forward)
+        working-directory: ./src
+        run: |
+          python run_hybrid_new_backtest.py \
+            --train_start "${{ github.event.inputs.train_start }}" \
+            --train_end "${{ github.event.inputs.train_end }}" \
+            --backtest_end "${{ github.event.inputs.backtest_end }}" \
+            --wf_step_months "${{ github.event.inputs.wf_step_months }}" \
+            --initial_capital "${{ github.event.inputs.initial_capital }}" \
+            --momentum_weight "${{ github.event.inputs.momentum_weight }}" \
+            --ai_weight "${{ github.event.inputs.ai_weight }}" \
+            --commission "${{ github.event.inputs.commission }}" \
+            --slippage "${{ github.event.inputs.slippage }}" \
+            --output "../backtest_result_hybrid_new.png"
+
+      - name: Upload result graph
+        uses: actions/upload-artifact@v4
+        with:
+          name: hybrid-new-backtest-result
+          path: backtest_result_hybrid_new.png
+          retention-days: 30
