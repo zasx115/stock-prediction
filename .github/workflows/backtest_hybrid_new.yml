@@ -2,18 +2,76 @@
 # 파일명: .github/workflows/backtest_hybrid_new.yml
 # 설명: 하이브리드_New 전략 백테스트 워크플로우 (Walk-Forward Sliding Window)
 #
-# Hybrid_New 최적 파라미터:
-#   - XGBoost: max_depth=3, subsample=0.5, colsample_bytree=0.5
-#   - 라벨: 5D-3% (TARGET_RETURN_OPTIMIZED=0.03)
-#   - 가중치: 모멘텀 50% + AI 50%
+# ============================================
+# [개요]
+# ============================================
 #
-# Walk-Forward 방식:
-#   Fold 1: Train [train_start ~ train_end]        → Test [train_end ~ +6M]
-#   Fold 2: Train [+6M sliding]                    → Test [+6M ~ +12M]
-#   ... backtest_end 까지 반복 (6개월마다 재학습)
+#   하이브리드_New 전략의 과거 성과를 Walk-Forward 방식으로 검증하는 워크플로우.
+#   수동 실행(workflow_dispatch)으로 파라미터를 입력받아 백테스트를 수행.
 #
-# 실행: Actions → Hybrid_New Backtest → Run workflow
-# 결과: 로그에서 메트릭 확인 + Artifacts에서 그래프 다운로드
+# ============================================
+# [하이브리드_New 최적 파라미터]
+# ============================================
+#
+#   - XGBoost: max_depth=3, subsample=0.5, colsample_bytree=0.5 (과적합 방지)
+#   - 라벨: 5D-3% (TARGET_RETURN_OPTIMIZED=0.03, 현실적 타겟)
+#   - 가중치: 모멘텀 50% + AI 50% (균형 결합)
+#   - Walk-Forward 스텝: 6개월 (run_param_experiment.py 실험 결과 최적값)
+#
+# ============================================
+# [Walk-Forward Sliding Window 방식]
+# ============================================
+#
+#   학습 윈도우(5년) 고정, 6개월마다 슬라이딩:
+#
+#     Fold 1: Train [2015-01 ~ 2020-01] → Test [2020-01 ~ 2020-07]
+#     Fold 2: Train [2015-07 ~ 2020-07] → Test [2020-07 ~ 2021-01]
+#     Fold 3: Train [2016-01 ~ 2021-01] → Test [2021-01 ~ 2021-07]
+#     ... backtest_end까지 반복
+#
+# ============================================
+# [실행 방법]
+# ============================================
+#
+#   GitHub → Actions 탭 → "Hybrid_New Backtest" → "Run workflow"
+#   → 파라미터 입력 (기본값 제공) → Run
+#
+# ============================================
+# [결과 확인]
+# ============================================
+#
+#   1. 로그: 실행 로그에서 텍스트 메트릭 확인 (수익률, CAGR, Sharpe, MDD 등)
+#   2. 그래프: Artifacts에서 backtest_result_hybrid_new.png 다운로드 (30일 보관)
+#      - Subplot 1: 누적 수익률 vs SPY + 폴드 경계선
+#      - Subplot 2: 월별 수익률 바 차트
+#      - Subplot 3: Drawdown 차트
+#      - Subplot 4: 폴드별 수익률 바 차트
+#
+# ============================================
+# [입력 파라미터 설명]
+# ============================================
+#
+#   | 파라미터         | 기본값      | 설명                                        |
+#   |-----------------|------------|---------------------------------------------|
+#   | train_start     | 2015-01-01 | AI 학습 시작일 (첫 번째 폴드 기준)              |
+#   | train_end       | 2020-01-01 | AI 학습 종료일 = 첫 번째 테스트 시작일            |
+#   | backtest_end    | (오늘)      | 백테스트 종료일 (빈값이면 오늘 날짜 자동 사용)     |
+#   | wf_step_months  | 6          | Walk-Forward 슬라이딩 스텝 (개월)               |
+#   | initial_capital | 10000      | 초기 자본금 (USD)                              |
+#   | momentum_weight | 0.50       | 하이브리드 스코어 중 모멘텀 가중치 (0.0~1.0)      |
+#   | ai_weight       | 0.50       | 하이브리드 스코어 중 AI 가중치 (0.0~1.0)         |
+#   | commission      | 0.001      | 매수/매도 수수료율 (0.1%)                       |
+#   | slippage        | 0.001      | 슬리피지율 (0.1%)                              |
+#
+# ============================================
+# [의존 파일]
+# ============================================
+#
+#   → src/run_hybrid_new_backtest.py (메인 실행 스크립트)
+#     ← src/data.py, src/ai_data.py, src/hybrid_strategy.py
+#     ← src/ai_strategy.py, src/ai_backtest.py, src/strategy.py
+#     ← src/run_model_experiment.py
+#
 # ============================================
 
 name: Hybrid_New Backtest
@@ -63,19 +121,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # [Step 1] 저장소 체크아웃
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # [Step 2] Python 3.11 설치
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # [Step 3] 의존 패키지 설치
+      # - pandas, numpy: 데이터 처리
+      # - yfinance: S&P 500 주가 데이터 다운로드 (Yahoo Finance)
+      # - xgboost: AI 전략 (이진 분류 모델)
+      # - lightgbm: 대체 모델 (ai_strategy.py에서 참조)
+      # - scikit-learn: train_test_split, 메트릭 계산
+      # - matplotlib: 4-subplot 그래프 생성
+      # - python-dotenv: .env 환경변수 로딩
+      # - lxml: Wikipedia S&P 500 종목 목록 HTML 파싱
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance requests xgboost lightgbm scikit-learn matplotlib python-dotenv lxml
 
+      # [Step 4] 백테스트 실행
+      # workflow_dispatch 입력값을 CLI 인자로 전달
+      # 출력: ../backtest_result_hybrid_new.png (루트 디렉토리에 저장)
       - name: Run Hybrid_New Backtest (Walk-Forward)
         working-directory: ./src
         run: |
@@ -91,6 +163,9 @@ jobs:
             --slippage "${{ github.event.inputs.slippage }}" \
             --output "../backtest_result_hybrid_new.png"
 
+      # [Step 5] 결과 그래프 업로드
+      # Artifacts에서 30일간 다운로드 가능
+      # 4-subplot 구성: 누적수익률, 월별수익률, Drawdown, 폴드별수익률
       - name: Upload result graph
         uses: actions/upload-artifact@v4
         with:
