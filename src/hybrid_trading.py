@@ -675,16 +675,55 @@ class HybridTradingStrategy:
         if not is_bullish:
             print(f"⚠️ 시장 필터링 발동: 평균 1개월 수익률 = {market_momentum:.4f} <= 0")
             print("   → HOLD (기존 보유 유지)")
-            # top3 스코어 계산 (참고용)
+            # top3 hybrid_score 계산 (참고용)
+            # ※ BUY와 동일한 로직으로 hybrid_score를 계산하여 반환
+            #   (모멘텀 원점수가 아닌, 모멘텀 정규화 + AI 확률 가중 평균)
             top_picks = []
             top_scores = []
+
+            # 모멘텀 점수 추출
             available_score_dates = self.score_df.index[self.score_df.index <= date_ts]
             if len(available_score_dates) > 0:
                 score_ts = available_score_dates[-1]
-                row = self.score_df.loc[score_ts].drop(labels=['SPY'], errors='ignore').dropna()
-                top3 = row.nlargest(3)
-                top_picks = list(top3.index)
-                top_scores = [float(v) for v in top3.values]
+                m_scores_hold = self.score_df.loc[score_ts].drop(labels=['SPY'], errors='ignore').dropna()
+
+                if not m_scores_hold.empty:
+                    # AI 확률 예측
+                    date_df = current_df[current_df['date'] == date_ts].copy()
+                    if date_df.empty:
+                        # 가장 가까운 이전 날짜 사용
+                        avail = sorted(current_df['date'].unique())
+                        candidates = [d for d in avail if pd.Timestamp(d) <= date_ts]
+                        if candidates:
+                            date_df = current_df[current_df['date'] == candidates[-1]].copy()
+
+                    ai_pred_hold = self.ai_strategy.predict(date_df, self.feature_cols) if not date_df.empty else pd.DataFrame()
+
+                    if not ai_pred_hold.empty:
+                        # 모멘텀 정규화 (0~1, min-max scaling) - BUY와 동일
+                        m_min, m_max = m_scores_hold.min(), m_scores_hold.max()
+                        m_norm_hold = (m_scores_hold - m_min) / (m_max - m_min + 1e-8)
+
+                        # hybrid_score 계산 - BUY와 동일
+                        merged_hold = ai_pred_hold.copy()
+                        merged_hold['m_score'] = merged_hold['symbol'].map(m_norm_hold)
+                        merged_hold = merged_hold.dropna()
+
+                        if not merged_hold.empty:
+                            merged_hold['hybrid_score'] = (
+                                merged_hold['m_score'] * self.weight_m +
+                                merged_hold['probability'] * self.weight_ai
+                            )
+                            merged_hold = merged_hold.sort_values('hybrid_score', ascending=False)
+                            top3 = merged_hold.head(3)
+                            top_picks = top3['symbol'].tolist()
+                            top_scores = top3['hybrid_score'].tolist()
+                    else:
+                        # AI 예측 불가 시 모멘텀 원점수 폴백
+                        top3 = m_scores_hold.nlargest(3)
+                        top_picks = list(top3.index)
+                        top_scores = [float(v) for v in top3.values]
+
             return {
                 'picks': top_picks,
                 'scores': top_scores,
