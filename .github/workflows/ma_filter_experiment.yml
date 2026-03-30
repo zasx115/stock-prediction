@@ -1,0 +1,105 @@
+# ============================================
+# 파일명: .github/workflows/ma_filter_experiment.yml
+# 설명: MA 추세 필터 실험 — 수동 실행 워크플로우
+#
+# 실험 내용:
+#   기존 3가지 전략(모멘텀, 하이브리드, 하이브리드New)과
+#   MA 필터 적용 버전 3가지를 백테스트로 비교.
+#
+# 추가 필터:
+#   1. SPY 또는 QQQ 종가 > 200일 이동평균 → 매수 진행
+#   2. 종목의 MA20 > MA60 > MA200 (정배열) → 종목 포함
+#
+# 실행 방법:
+#   GitHub Actions → MA Filter Experiment → Run workflow
+# ============================================
+
+name: MA Filter Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      train_start:
+        description: '학습 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2015-01-01'
+      train_end:
+        description: '학습 종료일 = 백테스트 시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2020-01-01'
+      backtest_end:
+        description: '백테스트 종료일 (빈값=오늘)'
+        required: false
+        default: ''
+      wf_step_months:
+        description: 'Walk-Forward 스텝 (개월)'
+        required: false
+        default: '6'
+      initial_capital:
+        description: '초기 자본금 (USD)'
+        required: false
+        default: '10000'
+
+jobs:
+  ma-filter-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # 1. 코드 체크아웃
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Python 설치
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. 의존성 설치
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests \
+                      xgboost lightgbm scikit-learn \
+                      gspread oauth2client python-dotenv \
+                      lxml matplotlib
+
+      # 4. 환경 변수 설정
+      - name: Setup environment
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" >> $GITHUB_ENV
+          echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID"     >> $GITHUB_ENV
+          if [ -n "$GOOGLE_CREDENTIALS" ]; then
+            echo "$GOOGLE_CREDENTIALS" > /tmp/credentials.json
+            echo "GOOGLE_CREDENTIALS_PATH=/tmp/credentials.json" >> $GITHUB_ENV
+          fi
+
+      # 5. 실험 실행
+      - name: Run MA Filter Experiment
+        working-directory: ./src
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          python run_ma_filter_experiment.py \
+            --train_start     "${{ github.event.inputs.train_start }}" \
+            --train_end       "${{ github.event.inputs.train_end }}" \
+            --backtest_end    "${{ github.event.inputs.backtest_end }}" \
+            --wf_step_months  "${{ github.event.inputs.wf_step_months }}" \
+            --initial_capital "${{ github.event.inputs.initial_capital }}" \
+            --output          ma_filter_result.png
+
+      # 6. 결과 차트 업로드 (Artifacts)
+      - name: Upload result chart
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ma-filter-results-${{ github.run_number }}
+          path: src/ma_filter_result.png
+          retention-days: 30
