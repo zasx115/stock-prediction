@@ -158,7 +158,7 @@ def get_today_signal(strategy=None):
     오늘의 매매 신호 생성
     """
     if strategy is None:
-        strategy = CustomStrategy()
+        strategy = CustomStrategy(ma_filter=True)
     
     print("=" * 60)
     print(f"Signal Generation")
@@ -265,7 +265,7 @@ def get_daily_ref_signal(strategy=None):
     - 6개월: pct_change(126)
     """
     if strategy is None:
-        strategy = CustomStrategy()
+        strategy = CustomStrategy(ma_filter=True)
 
     sp500 = get_sp500_list()
     symbols = sp500["symbol"].tolist()

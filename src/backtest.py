@@ -115,7 +115,7 @@ def run_backtest(df=None, initial_capital=None, commission=None, slippage=None):
         df = get_backtest_data()
 
     # ===== 전략 초기화 =====
-    strategy = CustomStrategy()
+    strategy = CustomStrategy(ma_filter=True)
 
     # ===== 설정 출력 =====
     print("=" * 60)

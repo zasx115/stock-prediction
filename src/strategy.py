@@ -44,6 +44,11 @@ ALLOCATIONS = [0.4, 0.3, 0.3]  # 투자 비중
 CORRELATION_PERIOD = 60      # 상관관계 계산 기간 (60일)
 CORRELATION_THRESHOLD = 0.5  # 최소 상관관계
 
+# ----- MA 추세 필터 -----
+MA_FILTER_ENABLED  = False           # 기본 비활성화 (하위 호환)
+MA_MARKET_PERIOD   = 200             # 시장 MA 기간
+MA_MARKET_TICKERS  = ['SPY', 'QQQ'] # 시장 기준 티커 (price_df에 있는 것만 사용)
+
 
 # ============================================
 # [1] 커스텀 전략 클래스
@@ -63,17 +68,19 @@ class CustomStrategy:
         picks = strategy.select_stocks(price_df, date)
     """
     
-    def __init__(self, 
-                 weight_1m=WEIGHT_1M, 
-                 weight_3m=WEIGHT_3M, 
+    def __init__(self,
+                 weight_1m=WEIGHT_1M,
+                 weight_3m=WEIGHT_3M,
                  weight_6m=WEIGHT_6M,
                  top_n=TOP_N,
                  allocations=ALLOCATIONS,
                  correlation_period=CORRELATION_PERIOD,
-                 correlation_threshold=CORRELATION_THRESHOLD):
+                 correlation_threshold=CORRELATION_THRESHOLD,
+                 ma_filter=MA_FILTER_ENABLED,
+                 ma_market_period=MA_MARKET_PERIOD):
         """
         전략 초기화
-        
+
         Args:
             weight_1m: 1개월 수익률 가중치
             weight_3m: 3개월 수익률 가중치
@@ -82,6 +89,8 @@ class CustomStrategy:
             allocations: 종목별 투자 비중
             correlation_period: 상관관계 계산 기간
             correlation_threshold: 최소 상관관계
+            ma_filter: MA 추세 필터 활성화 여부
+            ma_market_period: 시장 MA 기간 (기본 200일)
         """
         self.weight_1m = weight_1m
         self.weight_3m = weight_3m
@@ -90,11 +99,17 @@ class CustomStrategy:
         self.allocations = allocations
         self.correlation_period = correlation_period
         self.correlation_threshold = correlation_threshold
-        
+        self.ma_filter = ma_filter
+        self.ma_market_period = ma_market_period
+
         # 캐시 (계산 결과 저장)
         self._correlation_df = None
         self._score_df = None
         self._ret_1m = None
+        # MA 캐시 (prepare에서 계산)
+        self._ma_tables       = None   # {'ma20', 'ma60', 'ma200'}
+        self._market_price_df = None   # SPY/QQQ 가격
+        self._market_ma_df    = None   # SPY/QQQ 200일 MA
     
     # ============================================
     # [2] 상관관계 계산
@@ -261,6 +276,22 @@ class CustomStrategy:
         if filtered_scores.empty:
             return None
 
+        # ----- [3.5] MA 추세 필터 -----
+        if self.ma_filter:
+            # 시장 MA 필터 (전역): SPY/QQQ 200일선 아래면 매수 중단
+            if not self._check_market_ma(date_ts):
+                return None
+
+            # 정배열 필터 (종목별): MA20 > MA60 > MA200
+            ma_passed = [sym for sym in filtered_scores.index
+                         if self._check_jungbaeyeol(sym, date_ts)]
+            if ma_passed:
+                filtered_scores = filtered_scores[
+                    filtered_scores.index.isin(ma_passed)
+                ]
+            if filtered_scores.empty:
+                return None
+
         # ----- [4] Top N 선정: 점수 내림차순 -----
         top_n = filtered_scores.nlargest(min(self.top_n, len(filtered_scores)))
 
@@ -298,12 +329,67 @@ class CustomStrategy:
         """
         # 상관관계 계산
         correlation_df = self.calc_correlation(price_df)
-        
+
         # 모멘텀 점수 계산
         score_df, ret_1m = self.calc_momentum_scores(tuesday_df)
-        
+
+        if self.ma_filter:
+            self._prepare_ma_data(price_df)
+
         return score_df, correlation_df, ret_1m
-    
+
+    def _prepare_ma_data(self, price_df):
+        """MA 필터용 이동평균 테이블 계산 및 캐시"""
+        # 정배열 필터: 전 종목 MA20 / MA60 / MA200
+        self._ma_tables = {
+            'ma20':  price_df.rolling(20,  min_periods=20).mean(),
+            'ma60':  price_df.rolling(60,  min_periods=60).mean(),
+            'ma200': price_df.rolling(200, min_periods=200).mean(),
+        }
+        # 시장 MA 필터: price_df에 존재하는 SPY / QQQ
+        tickers = [t for t in MA_MARKET_TICKERS if t in price_df.columns]
+        if tickers:
+            mkt = price_df[tickers]
+            self._market_price_df = mkt
+            self._market_ma_df    = mkt.rolling(
+                self.ma_market_period, min_periods=self.ma_market_period
+            ).mean()
+
+    def _check_market_ma(self, date_ts):
+        """
+        시장 MA 필터: SPY 또는 QQQ 종가 > 200일 MA  →  True(매수 가능)
+        데이터 없거나 NaN이면 fallback(통과)
+        """
+        if self._market_price_df is None or self._market_ma_df is None:
+            return True
+        if date_ts not in self._market_price_df.index:
+            return True
+        for ticker in self._market_price_df.columns:
+            price = self._market_price_df.loc[date_ts, ticker]
+            ma    = self._market_ma_df.loc[date_ts, ticker]
+            if pd.isna(price) or pd.isna(ma):
+                continue
+            if price > ma:
+                return True
+        return False
+
+    def _check_jungbaeyeol(self, symbol, date_ts):
+        """
+        정배열 필터: MA20 > MA60 > MA200  →  True(포함)
+        데이터 부족 시 fallback(통과)
+        """
+        if self._ma_tables is None:
+            return True
+        try:
+            ma20  = self._ma_tables['ma20'].loc[date_ts, symbol]
+            ma60  = self._ma_tables['ma60'].loc[date_ts, symbol]
+            ma200 = self._ma_tables['ma200'].loc[date_ts, symbol]
+            if any(pd.isna(v) for v in [ma20, ma60, ma200]):
+                return True
+            return float(ma20) > float(ma60) > float(ma200)
+        except (KeyError, TypeError):
+            return True
+
     def get_allocations(self, n_picks):
         """
         종목 수에 따른 비중 반환
