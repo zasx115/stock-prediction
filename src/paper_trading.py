@@ -982,27 +982,24 @@ def run_weekly(sheets=None):
         rebalancing = calculate_rebalancing(portfolio, signal)
         print_rebalancing(rebalancing)
         
-        # 텔레그램 발송 (리밸런싱 안내)
-        send_rebalancing(rebalancing, total_capital)
-        
         # 손절 체크 (알림만)
         stop_alerts = check_stop_loss(sheets)
-        
+
         # 일일 가치 기록 (sync_result의 cash 사용)
         daily_data, portfolio = record_daily_value(sheets, sync_result)
-        
+
         # 성과 업데이트
         update_performance(sheets)
-        
-        # Telegram 포트폴리오
-        if portfolio:
+
+        # Telegram 주간 요약 (단일 메시지)
+        if daily_data and portfolio:
             port_value = {
                 "total": portfolio["total_value"],
                 "cash": portfolio["cash"],
                 "stocks": portfolio["stocks_value"],
                 "holdings_detail": portfolio["holdings"]
             }
-            send_portfolio(port_value)
+            send_daily_summary(daily_data, port_value, signal=signal, strategy="Momentum", period="Weekly")
         
     except Exception as e:
         print(f"Error: {e}")

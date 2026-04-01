@@ -1211,9 +1211,6 @@ def run_hybrid_weekly():
     if signal.get('market_filter', False):
         print("\n⚠️ 시장 필터링 발동 - HOLD (기존 보유 유지)")
 
-        # Telegram 전송
-        send_hybrid_signal(signal, INITIAL_CAPITAL, WEIGHT_MOMENTUM, WEIGHT_AI)
-
         # Signal 저장
         sheets.save_signal(signal)
 
@@ -1222,43 +1219,58 @@ def run_hybrid_weekly():
         cash = sync_result.get("cash", INITIAL_CAPITAL)
         stocks_value = 0.0
         holdings_detail = []
-        if portfolio:
-            import yfinance as yf
-            symbols = list(portfolio.keys()) + ['SPY']
-            current_prices = {}
-            for sym in symbols:
-                try:
-                    ticker = yf.Ticker(sym)
-                    hist = ticker.history(period='1d')
-                    if not hist.empty:
-                        current_prices[sym] = hist['Close'].iloc[-1]
-                except:
-                    pass
-            spy_price = current_prices.get('SPY', 0)
-            sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
+        current_prices = {}
+        spy_price = 0
+        import yfinance as yf
+        symbols = list(portfolio.keys()) + ['SPY'] if portfolio else ['SPY']
+        for sym in symbols:
+            try:
+                ticker = yf.Ticker(sym)
+                hist = ticker.history(period='1d')
+                if not hist.empty:
+                    current_prices[sym] = float(hist['Close'].iloc[-1])
+            except:
+                pass
+        spy_price = current_prices.get('SPY', 0)
+        sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
 
-            for sym, data in portfolio.items():
-                shares = data.get('shares', 0)
-                avg_price = data.get('avg_price', 0)
-                cur_price = current_prices.get(sym, avg_price)
-                stocks_value += shares * cur_price
-                pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
-                holdings_detail.append({
-                    "symbol": sym,
-                    "shares": shares,
-                    "profit_loss_pct": pnl_pct
-                })
-
-        # Telegram 전송 2: 포트폴리오
-        send_hybrid_portfolio({
-            "total": cash + stocks_value,
-            "cash": cash,
-            "stocks": stocks_value,
-            "holdings_detail": holdings_detail
-        })
+        for sym, data in portfolio.items():
+            shares = data.get('shares', 0)
+            avg_price = data.get('avg_price', 0)
+            cur_price = current_prices.get(sym, avg_price)
+            stocks_value += shares * cur_price
+            pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+            holdings_detail.append({
+                "symbol": sym, "shares": shares, "profit_loss_pct": pnl_pct
+            })
 
         # Performance 업데이트
         sheets.update_performance()
+
+        # 주간 수익률 로드
+        today = datetime.now().strftime('%Y-%m-%d')
+        daily_return = 0
+        spy_return_pct = 0
+        alpha = 0
+        if sheets.sheets:
+            daily_df = sheets.sheets.load_daily_values()
+            if len(daily_df) > 1:
+                try:
+                    daily_return = float(daily_df.iloc[-1]["Daily_Return%"])
+                    spy_return_pct = float(daily_df.iloc[-1]["SPY_Return%"])
+                    alpha = float(daily_df.iloc[-1]["Alpha"])
+                except:
+                    pass
+
+        # Telegram: 단일 주간 요약
+        signal['market_trend'] = 'DOWN'
+        if 'date' not in signal:
+            signal['date'] = today
+        send_daily_summary(
+            {'date': today, 'daily_return_pct': daily_return, 'spy_return_pct': spy_return_pct, 'alpha': alpha},
+            {'total': cash + stocks_value, 'cash': cash, 'stocks': stocks_value, 'holdings_detail': holdings_detail},
+            signal=signal, strategy="Hybrid", period="Weekly"
+        )
 
         print("\n✅ Hybrid 주간 실행 완료 (HOLD)")
         return {'signal': signal, 'market_filter': True}
@@ -1291,27 +1303,56 @@ def run_hybrid_weekly():
     # 8. 출력
     print_hybrid_rebalancing(rebalancing)
 
-    # 9. Telegram 전송 (signal 포함)
-    send_hybrid_rebalancing(rebalancing, total_capital, signal, WEIGHT_MOMENTUM, WEIGHT_AI)
-
-    # 10. Sheets 기록
-    # 신호 저장
+    # 9. Sheets 기록
     sheets.save_signal(signal)
 
-    # 거래 Trades 시트에 저장 → 수동 입력 (모멘텀과 동일)
-    # 리밸런싱 안내는 Telegram으로 발송, 실제 매매 후 Trades에 직접 입력
-
-    # 11. Holdings 동기화 (Trades 기반 재계산)
+    # 10. Holdings 동기화 (Trades 기반 재계산)
     sync_result = sheets.sync_holdings()
     cash = sync_result.get("cash", INITIAL_CAPITAL)
 
-    # 12. Daily_Value 저장
+    # 11. Daily_Value 저장
     spy_price = signal['prices'].get('SPY', 0)
     new_holdings = sheets.get_holdings()
     sheets.save_daily_value(new_holdings, signal['prices'], cash, spy_price)
 
-    # 13. Performance 업데이트 (월간/연간 포함)
+    # 12. Performance 업데이트 (월간/연간 포함)
     sheets.update_performance()
+
+    # 13. 주간 수익률 로드
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily_return = 0
+    spy_return_pct = 0
+    alpha = 0
+    if sheets.sheets:
+        daily_df = sheets.sheets.load_daily_values()
+        if len(daily_df) > 1:
+            try:
+                daily_return = float(daily_df.iloc[-1]["Daily_Return%"])
+                spy_return_pct = float(daily_df.iloc[-1]["SPY_Return%"])
+                alpha = float(daily_df.iloc[-1]["Alpha"])
+            except:
+                pass
+
+    # 14. 현재 보유 종목 상세 (Telegram용)
+    holdings_detail = []
+    new_stocks_value = 0
+    for sym, info in new_holdings.items():
+        shares = info.get('shares', 0)
+        avg_price = info.get('avg_price', 0)
+        cur_price = signal['prices'].get(sym, avg_price)
+        new_stocks_value += shares * cur_price
+        pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+        holdings_detail.append({'symbol': sym, 'shares': shares, 'profit_loss_pct': pnl_pct})
+
+    # 15. Telegram: 단일 주간 요약
+    signal['market_trend'] = 'UP'
+    if 'date' not in signal:
+        signal['date'] = today
+    send_daily_summary(
+        {'date': today, 'daily_return_pct': daily_return, 'spy_return_pct': spy_return_pct, 'alpha': alpha},
+        {'total': cash + new_stocks_value, 'cash': cash, 'stocks': new_stocks_value, 'holdings_detail': holdings_detail},
+        signal=signal, strategy="Hybrid", period="Weekly"
+    )
 
     print("\n✅ Hybrid 주간 실행 완료!")
 
@@ -1636,44 +1677,63 @@ def run_hybrid_new_weekly():
     # 4. 시장 필터링 체크
     if signal.get('market_filter', False):
         print("\n⚠️ 시장 필터링 발동 - HOLD")
-        send_hybrid_signal(signal, INITIAL_CAPITAL,
-                           WEIGHT_MOMENTUM_NEW, WEIGHT_AI_NEW,
-                           label="Hybrid_New")
         sheets.save_signal(signal)
 
         portfolio = sheets.get_holdings()
         cash = sync_result.get("cash", INITIAL_CAPITAL)
         stocks_value = 0.0
         holdings_detail = []
-        if portfolio:
-            import yfinance as yf
-            symbols = list(portfolio.keys()) + ['SPY']
-            current_prices = {}
-            for sym in symbols:
+        current_prices = {}
+        spy_price = 0
+        import yfinance as yf
+        symbols = list(portfolio.keys()) + ['SPY'] if portfolio else ['SPY']
+        for sym in symbols:
+            try:
+                ticker = yf.Ticker(sym)
+                hist = ticker.history(period='1d')
+                if not hist.empty:
+                    current_prices[sym] = float(hist['Close'].iloc[-1])
+            except:
+                pass
+        spy_price = current_prices.get('SPY', 0)
+        sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
+
+        for sym, data in portfolio.items():
+            shares = data.get('shares', 0)
+            avg_price = data.get('avg_price', 0)
+            cur_price = current_prices.get(sym, avg_price)
+            stocks_value += shares * cur_price
+            pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+            holdings_detail.append({
+                "symbol": sym, "shares": shares, "profit_loss_pct": pnl_pct
+            })
+
+        sheets.update_performance()
+
+        # 주간 수익률 로드
+        today = datetime.now().strftime('%Y-%m-%d')
+        daily_return = 0
+        spy_return_pct = 0
+        alpha = 0
+        if sheets.sheets:
+            daily_df = sheets.sheets.load_daily_values()
+            if len(daily_df) > 1:
                 try:
-                    ticker = yf.Ticker(sym)
-                    hist = ticker.history(period='1d')
-                    if not hist.empty:
-                        current_prices[sym] = hist['Close'].iloc[-1]
+                    daily_return = float(daily_df.iloc[-1]["Daily_Return%"])
+                    spy_return_pct = float(daily_df.iloc[-1]["SPY_Return%"])
+                    alpha = float(daily_df.iloc[-1]["Alpha"])
                 except:
                     pass
-            spy_price = current_prices.get('SPY', 0)
-            sheets.save_daily_value(portfolio, current_prices, cash, spy_price)
-            for sym, data in portfolio.items():
-                shares = data.get('shares', 0)
-                avg_price = data.get('avg_price', 0)
-                cur_price = current_prices.get(sym, avg_price)
-                stocks_value += shares * cur_price
-                pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
-                holdings_detail.append({
-                    "symbol": sym, "shares": shares, "profit_loss_pct": pnl_pct
-                })
 
-        send_hybrid_portfolio({
-            "total": cash + stocks_value, "cash": cash,
-            "stocks": stocks_value, "holdings_detail": holdings_detail
-        }, label="Hybrid_New")
-        sheets.update_performance()
+        # Telegram: 단일 주간 요약
+        signal['market_trend'] = 'DOWN'
+        if 'date' not in signal:
+            signal['date'] = today
+        send_daily_summary(
+            {'date': today, 'daily_return_pct': daily_return, 'spy_return_pct': spy_return_pct, 'alpha': alpha},
+            {'total': cash + stocks_value, 'cash': cash, 'stocks': stocks_value, 'holdings_detail': holdings_detail},
+            signal=signal, strategy="Hybrid_New", period="Weekly"
+        )
         print("\n✅ Hybrid_New 주간 실행 완료 (HOLD)")
         return {'signal': signal, 'market_filter': True}
 
@@ -1697,12 +1757,7 @@ def run_hybrid_new_weekly():
     rebalancing = calculate_hybrid_rebalancing(portfolio, signal, total_capital, available_cash)
     print_hybrid_rebalancing(rebalancing)
 
-    # 8. Telegram 전송
-    send_hybrid_rebalancing(rebalancing, total_capital, signal,
-                            WEIGHT_MOMENTUM_NEW, WEIGHT_AI_NEW,
-                            label="Hybrid_New")
-
-    # 9. Sheets 기록
+    # 8. Sheets 기록
     sheets.save_signal(signal)
     sync_result = sheets.sync_holdings()
     cash = sync_result.get("cash", INITIAL_CAPITAL)
@@ -1710,6 +1765,42 @@ def run_hybrid_new_weekly():
     new_holdings = sheets.get_holdings()
     sheets.save_daily_value(new_holdings, signal['prices'], cash, spy_price)
     sheets.update_performance()
+
+    # 9. 주간 수익률 로드
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily_return = 0
+    spy_return_pct = 0
+    alpha = 0
+    if sheets.sheets:
+        daily_df = sheets.sheets.load_daily_values()
+        if len(daily_df) > 1:
+            try:
+                daily_return = float(daily_df.iloc[-1]["Daily_Return%"])
+                spy_return_pct = float(daily_df.iloc[-1]["SPY_Return%"])
+                alpha = float(daily_df.iloc[-1]["Alpha"])
+            except:
+                pass
+
+    # 10. 현재 보유 종목 상세 (Telegram용)
+    holdings_detail = []
+    new_stocks_value = 0
+    for sym, info in new_holdings.items():
+        shares = info.get('shares', 0)
+        avg_price = info.get('avg_price', 0)
+        cur_price = signal['prices'].get(sym, avg_price)
+        new_stocks_value += shares * cur_price
+        pnl_pct = ((cur_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+        holdings_detail.append({'symbol': sym, 'shares': shares, 'profit_loss_pct': pnl_pct})
+
+    # 11. Telegram: 단일 주간 요약
+    signal['market_trend'] = 'UP'
+    if 'date' not in signal:
+        signal['date'] = today
+    send_daily_summary(
+        {'date': today, 'daily_return_pct': daily_return, 'spy_return_pct': spy_return_pct, 'alpha': alpha},
+        {'total': cash + new_stocks_value, 'cash': cash, 'stocks': new_stocks_value, 'holdings_detail': holdings_detail},
+        signal=signal, strategy="Hybrid_New", period="Weekly"
+    )
 
     print("\n✅ Hybrid_New 주간 실행 완료!")
     return {'signal': signal, 'rebalancing': rebalancing}
