@@ -158,12 +158,13 @@ Stocks: ${stocks:,.2f}
     return send_message(text)
 
 
-def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None):
+def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None, period="Daily"):
     """
-    일일 요약 메시지
+    일일/주간 요약 메시지
 
     Args:
-        signal: sheets.get_latest_signal() 반환값 (없으면 생략)
+        signal: 시그널 dict (없으면 생략)
+        period: "Daily" 또는 "Weekly"
     """
     date = daily_data.get("date", datetime.now().strftime("%Y-%m-%d"))
 
@@ -183,7 +184,8 @@ def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None):
     if not holdings_text:
         holdings_text = "- 보유 종목 없음\n"
 
-    # 시그널 섹션 (참고용 - 매매와 무관)
+    # 시그널 섹션
+    signal_label = "오늘의 시그널 (참고용)" if period == "Daily" else "이번 주 신호"
     signal_text = ""
     if signal:
         sig_type = signal.get("signal", "")
@@ -203,7 +205,7 @@ def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None):
                 score = scores[i] if i < len(scores) else 0
                 picks_text += f"  {i+1}. {sym} ({alloc*100:.0f}%) score:{score:.4f}\n"
             signal_text = (
-                f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
+                f"\n<b>📊 {signal_label}</b>\n"
                 f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
                 f"신호: BUY\n{picks_text}"
             )
@@ -214,15 +216,15 @@ def send_daily_summary(daily_data, portfolio_value, signal=None, strategy=None):
                 rank_text += f"  {i+1}위 : {sym} ({score:.4f})\n"
             rank_block = f"\n종목 분석\n{rank_text}" if rank_text else ""
             signal_text = (
-                f"\n<b>📊 오늘의 시그널 (참고용)</b>\n"
+                f"\n<b>📊 {signal_label}</b>\n"
                 f"기준일: {sig_date} | {market_trend} ({market_momentum:.4f})\n"
                 f"신호: {sig_type}\n{rank_block}"
             )
 
     strategy_label = f" [{strategy}]" if strategy else ""
-    text = f"""<b>Daily Summary{strategy_label} ({date})</b>
+    text = f"""<b>{period} Summary{strategy_label} ({date})</b>
 Portfolio: ${total:,.2f}
-Daily: {daily_return:+.2f}%
+{period}: {daily_return:+.2f}%
 SPY: {spy_return:+.2f}%
 Alpha: {alpha:+.2f}%
 {signal_text}
